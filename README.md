@@ -14,7 +14,7 @@
 
 ## ⚡ 如何執行 (How to Run)
 
-**這輩子只需要這一個指令。**
+**只需要這一個指令。**
 
 在專案的根目錄 (包含 `docker-compose.yml` 的地方)，打開你的終端機 (PowerShell / Terminal) 並執行：
 
@@ -72,7 +72,7 @@ docker-compose up
 
 ### 4. `Dockerfile` (修改)
 
-*   **CRLF & BOM 修正：** 加入 `sed` 指令來自動修正 Windows 的換行符號 (`\r`) 和 UTF-8 BOM，解決 `exec format error`。
+*   **CRLF & BOM 修正：** 加入 `sed` 指令來自動修正 Windows 的換行符號 (``) 和 UTF-8 BOM，解決 `exec format error`。
 *   **`CMD` 修正：** 將 `CMD` 從 `["./run.sh"]` 修改為 `["/bin/sh", "./run.sh"]`，以正確執行沒有 shebang (`#!/bin/sh`) 的腳本。
 
 ### 5. `rageval/evaluation/main.py` (修改)
@@ -90,6 +90,20 @@ docker-compose up
     *   **舊：** `base_url="http://localhost:11434/v1"`
     *   **新：** `base_url="http://ollama:11434/v1"`
 *   **原因：** 在 `docker-compose` 網路中，`app` 服務必須使用 `ollama` 服務的「服務名稱」(`ollama`) 來連接，而不是 `localhost`。
+
+## 🚀 未來工作 (Future Work)
+
+### 主要目標：修正 RAG 檢索流程
+
+當前的評估結果不佳，根本原因並非模型（裁判或生成模型）能力不足，而是檢索階段無法從 `dragonball_docs.jsonl` 中找到相關文件。
+
+### 代辦事項 (To-Do)
+
+- [ ] **偵錯 `My_RAG/main.py` 中的檢索演算法：**
+  - [ ] **分析 Chunking 策略：** 檢查文件切分是否合理，有沒有遺失關鍵資訊。
+  - [ ] **驗證 Embedding 模型：** 確認 Embedding 的效果是否能有效表達文本語意。
+  - [ ] **檢視 Similarity Search：** 檢查相似度搜索的邏輯，確認是否能正確匹配查詢與文件。
+- [ ] **暫緩更換模型：** 在檢索問題解決前，無需更換 `gemma:2b` 或 `granite4:3b` 模型。
 
 ## 🧹 如何停止與清理
 
