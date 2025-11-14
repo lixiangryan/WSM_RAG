@@ -36,15 +36,20 @@ docker-compose up --build
 
 ### 未來執行
 
-如果你沒有修改任何程式碼，只想重新跑一次評估，你只需要執行：
+1. **重新跑一次評估 (無修改程式碼):**
+   ```bash
+   docker-compose up
+   ```
 
-```bash
-docker-compose up
-```
-如果有修改程式碼，執行:
-```bash
-docker-compose up --build --force-recreate
-```
+2. **重新建置並執行 (有修改程式碼):**
+   ```bash
+   docker-compose up --build --force-recreate
+   ```
+
+3. **跑完自動關閉並清除所有服務:**
+   ```bash
+   docker-compose up --build --force-recreate --abort-on-container-exit
+   ```
 
 ## 📜 專案配置修改總結
 
