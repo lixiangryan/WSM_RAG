@@ -92,32 +92,42 @@ docker-compose up
     *   **新：** `base_url="http://ollama:11434/v1"`
 *   **原因：** 在 `docker-compose` 網路中，`app` 服務必須使用 `ollama` 服務的「服務名稱」(`ollama`) 來連接，而不是 `localhost`。
 
-## 🚀 未來工作 (Future Work)
+## 疑難排解 (Troubleshooting)
 
-### 主要目標：修正 RAG 檢索流程
+### 1. `ollama-1 | exec /entrypoint.sh: no such file or directory`
 
-當前的評估結果不佳，根本原因並非模型（裁判或生成模型）能力不足，而是檢索階段無法從 `dragonball_docs.jsonl` 中找到相關文件。
+**問題描述：**
+當 `ollama_service` 容器啟動時，可能會遇到 `exec /entrypoint.sh: no such file or directory` 錯誤，導致 Ollama 服務無法啟動。這通常發生在 `entrypoint.sh` 腳本是在 Windows 環境下建立或編輯，導致其包含 Windows 風格的換行符號 (CRLF)，而 Docker 容器內部的 Linux 環境無法正確解析。
 
-### 代辦事項 (To-Do)
+**解決方案：**
+在 `ollama_service/Dockerfile` 中，於 `COPY entrypoint.sh /entrypoint.sh` 之後，加入一行 `RUN sed -i 's/\r$//' /entrypoint.sh`。這會將腳本中的所有 CRLF 換行符號轉換為 Linux 兼容的 LF 換行符號。
 
-- [ ] **偵錯 `My_RAG/main.py` 中的檢索演算法：**
-  - [ ] **分析 Chunking 策略：** 檢查文件切分是否合理，有沒有遺失關鍵資訊。
-  - [ ] **驗證 Embedding 模型：** 確認 Embedding 的效果是否能有效表達文本語意。
-  - [ ] **檢視 Similarity Search：** 檢查相似度搜索的邏輯，確認是否能正確匹配查詢與文件。
-- [ ] **暫緩更換模型：** 在檢索問題解決前，無需更換 `gemma:2b` 或 `granite4:3b` 模型。
+**修改範例 (ollama_service/Dockerfile):**
+```dockerfile
+# ... (其他指令)
+COPY entrypoint.sh /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh # 新增此行
+RUN chmod +x /entrypoint.sh
+# ... (其他指令)
+```
 
-## 🧹 如何停止與清理
+### 2. `app-1 | ./wait_and_run.sh: 7: curl: not found` (**v0.1 更新**)
 
-1.  **停止服務：** 在 `docker-compose up` 正在運行的終端機中，按下 `Ctrl + C`。
-2.  **停止並移除 Container：** (如果服務是在背景 `-d` 執行，或你想徹底清理)
-    ```bash
-    docker-compose down
-    ```
-3.  **移除 Ollama 模型快取 (非必要)：** 如果你想刪除下載的 `gemma:2b` 模型，執行：
-    ```bash
-    docker-compose down -v
-    ```
-    (`-v` 會連同 `ollama_storage` volume 一起刪除)
+**問題描述：**
+`app` 容器在執行 `wait_and_run.sh` 腳本時，可能會報告 `curl: not found` 錯誤。這是因為 `app` 服務的基礎映像 `python:3.9-slim` 是一個輕量級映像，預設沒有安裝 `curl` 工具，而 `wait_and_run.sh` 腳本需要 `curl` 來檢查 Ollama 服務的健康狀態。
+
+**解決方案：**
+在主 `Dockerfile` 中，於 `WORKDIR /app` 之後，加入一行 `RUN apt-get update && apt-get install -y curl`。這會在建置 `app` 容器時安裝 `curl`。
+
+**修改範例 (Dockerfile):**
+```dockerfile
+# ... (其他指令)
+WORKDIR /app
+RUN apt-get update && apt-get install -y curl # 新增此行
+# ... (其他指令)
+```
+
+**執行 `docker-compose up --build --force-recreate` 重新建置並啟動服務以應用這些修復。**
 
 ## 結果在這裡
 根據我們的設定，你的 run.sh 腳本會產生兩種類型的檔案，它們會被分別儲存到你本機 (Windows) 的兩個資料夾：
@@ -146,39 +156,29 @@ predictions_zh.jsonl
 
 (這些是 rageval 讀取並用來計算分數的原始答案)
 
-## 疑難排解 (Troubleshooting)
+## 🧹 如何停止與清理
 
-### 1. `ollama-1 | exec /entrypoint.sh: no such file or directory`
+1.  **停止服務：** 在 `docker-compose up` 正在運行的終端機中，按下 `Ctrl + C`。
+2.  **停止並移除 Container：** (如果服務是在背景 `-d` 執行，或你想徹底清理)
+    ```bash
+    docker-compose down
+    ```
+3.  **移除 Ollama 模型快取 (非必要)：** 如果你想刪除下載的 `gemma:2b` 模型，執行：
+    ```bash
+    docker-compose down -v
+    ```
+    (`-v` 會連同 `ollama_storage` volume 一起刪除)
 
-**問題描述：**
-當 `ollama_service` 容器啟動時，可能會遇到 `exec /entrypoint.sh: no such file or directory` 錯誤，導致 Ollama 服務無法啟動。這通常發生在 `entrypoint.sh` 腳本是在 Windows 環境下建立或編輯，導致其包含 Windows 風格的換行符號 (CRLF)，而 Docker 容器內部的 Linux 環境無法正確解析。
+## 🚀 未來工作 (Future Work)
 
-**解決方案：**
-在 `ollama_service/Dockerfile` 中，於 `COPY entrypoint.sh /entrypoint.sh` 之後，加入一行 `RUN sed -i 's/\r$//' /entrypoint.sh`。這會將腳本中的所有 CRLF 換行符號轉換為 Linux 兼容的 LF 換行符號。
+### 主要目標：修正 RAG 檢索流程
 
-**修改範例 (ollama_service/Dockerfile):**
-```dockerfile
-# ... (其他指令)
-COPY entrypoint.sh /entrypoint.sh
-RUN sed -i 's/\r$//' /entrypoint.sh # 新增此行
-RUN chmod +x /entrypoint.sh
-# ... (其他指令)
-```
+當前的評估結果不佳，根本原因並非模型（裁判或生成模型）能力不足，而是檢索階段無法從 `dragonball_docs.jsonl` 中找到相關文件。
 
-### 2. `app-1 | ./wait_and_run.sh: 7: curl: not found`
+### 代辦事項 (To-Do)
 
-**問題描述：**
-`app` 容器在執行 `wait_and_run.sh` 腳本時，可能會報告 `curl: not found` 錯誤。這是因為 `app` 服務的基礎映像 `python:3.9-slim` 是一個輕量級映像，預設沒有安裝 `curl` 工具，而 `wait_and_run.sh` 腳本需要 `curl` 來檢查 Ollama 服務的健康狀態。
-
-**解決方案：**
-在主 `Dockerfile` 中，於 `WORKDIR /app` 之後，加入一行 `RUN apt-get update && apt-get install -y curl`。這會在建置 `app` 容器時安裝 `curl`。
-
-**修改範例 (Dockerfile):**
-```dockerfile
-# ... (其他指令)
-WORKDIR /app
-RUN apt-get update && apt-get install -y curl # 新增此行
-# ... (其他指令)
-```
-
-**執行 `docker-compose up --build --force-recreate` 重新建置並啟動服務以應用這些修復。**
+- [ ] **偵錯 `My_RAG/main.py` 中的檢索演算法：**
+  - [ ] **分析 Chunking 策略：** 檢查文件切分是否合理，有沒有遺失關鍵資訊。
+  - [ ] **驗證 Embedding 模型：** 確認 Embedding 的效果是否能有效表達文本語意。
+  - [ ] **檢視 Similarity Search：** 檢查相似度搜索的邏輯，確認是否能正確匹配查詢與文件。
+- [ ] **暫緩更換模型：** 在檢索問題解決前，無需更換 `gemma:2b` 或 `granite4:3b` 模型。
