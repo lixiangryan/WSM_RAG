@@ -8,12 +8,53 @@ from ollama import Client
 from generator import load_ollama_config
 from knowledge_graph import SimpleKnowledgeGraph
 
+import requests
+import os
+import torch
+
 # 移除原本的 Ollama Client，因為 Rerank 不建議用生成式模型
 try:
     from sentence_transformers import SentenceTransformer, CrossEncoder
 except ImportError:
     SentenceTransformer = None
     CrossEncoder = None
+
+class RemoteFlagReranker:
+    """
+    Fake FlagReranker class: same interface as the official one (FlagEmbedding),
+    but internally calls a remote API. Adapts to CrossEncoder interface via predict().
+    """
+    def __init__(self, api_url: str):
+        self.api_url = api_url
+
+    def compute_score(self, pairs, max_length=1024):
+        # Strict Limit: Each API call supports at most 32 pairs.
+        batch_size = 32
+        all_scores = []
+        
+        for i in range(0, len(pairs), batch_size):
+            batch = pairs[i : i + batch_size]
+            payload = {"pairs": [{"text1": str(a)[:max_length], "text2": str(b)[:max_length]} for a, b in batch]}
+            
+            try:
+                resp = requests.post(self.api_url, json=payload, timeout=30)
+                if resp.status_code != 200:
+                    print(f"Warning: Remote Reranker API failed ({resp.status_code}): {resp.text}")
+                    # Return 0 scores for this batch on error to avoid crash
+                    all_scores.extend([0.0] * len(batch))
+                    continue
+                    
+                scores = resp.json().get("scores", [])
+                all_scores.extend(scores)
+            except Exception as e:
+                print(f"Error calling Remote Reranker: {e}")
+                all_scores.extend([0.0] * len(batch))
+
+        return np.array(all_scores)
+
+    def predict(self, pairs):
+        # Alias for CrossEncoder compatibility
+        return self.compute_score(pairs)
 
 class HybridRetriever:
     def __init__(
@@ -46,6 +87,8 @@ class HybridRetriever:
         self.embed_top_k = embed_top_k
         self.final_top_k = final_top_k
         self.use_reranker = use_reranker
+        
+        self.ollama_client = None
 
         # 2. 初始化 BM25
         self.tokenized_corpus = [self._tokenize(doc) for doc in self.corpus]
@@ -62,11 +105,25 @@ class HybridRetriever:
                 self.corpus, convert_to_numpy=True, normalize_embeddings=True
             )
 
-        # 4. 初始化 Reranker (Cross-Encoder)
+        # 4. 初始化 Reranker (Hybrid: Local vs Remote)
         self.reranker = None
-        if CrossEncoder and use_reranker:
-            # 這是一個專門用來評分 (Query, Document) 相關性的模型，速度極快
-            self.reranker = CrossEncoder(rerank_model_name)
+        if use_reranker:
+            # Logic: If we have GPU, use Local. If CPU only, prefer Remote to avoid timeout.
+            # User can override via env RERANKER_TYPE=local|remote
+            reranker_type = os.getenv("RERANKER_TYPE", "auto").lower()
+            remote_url = os.getenv("RERANKER_API_URL", "http://ollama-gateway:11434/rerank")
+            
+            has_gpu = torch.cuda.is_available()
+            
+            if reranker_type == "remote" or (reranker_type == "auto" and not has_gpu):
+                print(f"[Reranker] Using Remote API at {remote_url} (CPU Environment Detected)")
+                self.reranker = RemoteFlagReranker(remote_url)
+            elif CrossEncoder:
+                print(f"[Reranker] Using Local GPU: {rerank_model_name}")
+                self.reranker = CrossEncoder(rerank_model_name)
+            else:
+                print("[Reranker] Fallback to Remote due to missing libraries.")
+                self.reranker = RemoteFlagReranker(remote_url)
 
         # 5. 初始化 Knowledge Graph (NEW)
         self.kg = SimpleKnowledgeGraph(chunks, index_path=index_path)
