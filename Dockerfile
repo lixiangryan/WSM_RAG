@@ -15,8 +15,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY rageval/evaluation/requirements.txt ./evaluation-requirements.txt
 RUN pip install --no-cache-dir -r evaluation-requirements.txt
 
-# Download NLTK data during build
-RUN python3 -c "import nltk; nltk.download('punkt', quiet=True); nltk.download('porter_stemmer', quiet=True); nltk.download('punkt_tab', quiet=True)"
+# Download NLTK data during build (Moved to download_models.py for better management)
+# RUN python3 -c "import nltk; nltk.download('punkt', quiet=True); nltk.download('porter_stemmer', quiet=True); nltk.download('punkt_tab', quiet=True)"
+
+# [Optimization] Pre-download Models Layer
+# Copy only the download script first to leverage Docker cache
+COPY scripts/download_models.py ./scripts/
+# Execute download. This layer will be cached unless download_models.py changes.
+RUN python scripts/download_models.py
 
 # 複製專案內所有檔案到工作目錄
 COPY . .
