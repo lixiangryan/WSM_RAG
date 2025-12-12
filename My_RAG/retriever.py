@@ -55,6 +55,17 @@ class RemoteFlagReranker:
     def predict(self, pairs):
         # Alias for CrossEncoder compatibility
         return self.compute_score(pairs)
+    
+    @staticmethod
+    def check_connectivity(api_url: str) -> bool:
+        """Probe the API to see if it's reachable."""
+        try:
+            # Send a dummy pair to check connection
+            payload = {"pairs": [{"text1": "test", "text2": "test"}]}
+            resp = requests.post(api_url, json=payload, timeout=3)
+            return resp.status_code == 200
+        except Exception:
+            return False
 
 class HybridRetriever:
     def __init__(
@@ -108,21 +119,39 @@ class HybridRetriever:
         # 4. 初始化 Reranker (Hybrid: Local vs Remote)
         self.reranker = None
         if use_reranker:
-            # Logic: If we have GPU, use Local. If CPU only, prefer Remote to avoid timeout.
-            # User can override via env RERANKER_TYPE=local|remote
+            # Logic: 
+            # 1. Check user preference (RERANKER_TYPE).
+            # 2. If auto, check if Remote API is reachable (Submission Env often has weak GPU but working API).
+            # 3. If Remote API is reachable -> Use Remote.
+            # 4. If Remote API unreachable -> Fallback to Local GPU.
+            
             reranker_type = os.getenv("RERANKER_TYPE", "auto").lower()
             remote_url = os.getenv("RERANKER_API_URL", "http://ollama-gateway:11434/rerank")
             
-            has_gpu = torch.cuda.is_available()
+            use_remote = False
             
-            if reranker_type == "remote" or (reranker_type == "auto" and not has_gpu):
-                print(f"[Reranker] Using Remote API at {remote_url} (CPU Environment Detected)")
+            if reranker_type == "remote":
+                use_remote = True
+            elif reranker_type == "local":
+                use_remote = False
+            else: # auto
+                # Probe Remote API
+                if RemoteFlagReranker.check_connectivity(remote_url):
+                    print(f"[Reranker] Remote API detected at {remote_url}. Using Remote (Safer for Submission Env).")
+                    use_remote = True
+                else:
+                    print(f"[Reranker] Remote API unreachable at {remote_url}. Falling back to Local.")
+                    use_remote = False
+            
+            if use_remote:
                 self.reranker = RemoteFlagReranker(remote_url)
             elif CrossEncoder:
                 print(f"[Reranker] Using Local GPU: {rerank_model_name}")
                 self.reranker = CrossEncoder(rerank_model_name)
             else:
-                print("[Reranker] Fallback to Remote due to missing libraries.")
+                print("[Reranker] Warning: No GPU/CrossEncoder and no Remote API found. Reranking disabled or degraded.")
+                # We could try Remote anyway or just fail gracefully?
+                # Let's try Remote one last time in case probe failed flakily
                 self.reranker = RemoteFlagReranker(remote_url)
 
         # 5. 初始化 Knowledge Graph (NEW)
