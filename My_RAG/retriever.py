@@ -34,7 +34,10 @@ class RemoteFlagReranker:
         
         for i in range(0, len(pairs), batch_size):
             batch = pairs[i : i + batch_size]
-            payload = {"pairs": [{"text1": str(a)[:max_length], "text2": str(b)[:max_length]} for a, b in batch]}
+            # [Correction] Remove client-side char slicing. 
+            # The server handles truncation based on TOKENS (approx 1024 tokens).
+            # Slicing by chars [:1024] is too aggressive and incorrect.
+            payload = {"pairs": [{"text1": str(a), "text2": str(b)} for a, b in batch]}
             
             try:
                 resp = requests.post(self.api_url, json=payload, timeout=30)
