@@ -10,7 +10,14 @@ services:
     ports:
       - "11434:11434"
     volumes:
-      - ollama_storage:/root/.ollama
+      # Mount local Ollama models directory to avoid downloading
+      - /usr/share/ollama/.ollama:/root/.ollama
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:11434/api/tags" ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
     deploy:
       resources:
         reservations:
@@ -23,7 +30,8 @@ services:
   app:
     build: .
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
     volumes:
       - ./predictions:/app/predictions
       - ./results:/app/results

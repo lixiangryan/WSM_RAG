@@ -27,15 +27,19 @@ until $(curl --output /dev/null --silent --fail http://localhost:11434/api/tags)
 done
 
 echo "\nOllama server is ready."
-echo "Pulling gemma:2b model (this will only happen if it's missing)..."
+echo "Checking for required models..."
 
-# 4. 伺服器已就緒，現在才 pull 模型
-ollama pull gemma:2b
-ollama pull granite4:3b
-ollama pull embeddinggemma:300m
-ollama pull qwen3-embedding:0.6b
+# 4. Check and pull models only if missing (will fail gracefully in offline mode)
+for model in "gemma:2b" "granite4:3b"; do
+    if ollama list | grep -q "$model"; then
+        echo "✓ Model $model already exists"
+    else
+        echo "⚠ Model $model not found, attempting to pull (may fail in offline mode)..."
+        ollama pull "$model" 2>/dev/null || echo "✗ Failed to pull $model (offline mode?)"
+    fi
+done
 
-echo "Model pull complete. Server is running and listening on 0.0.0.0"
+echo "Model check complete. Server is running and listening on 0.0.0.0"
 
 # 5. 讓 container 保持存活 (等待背景的伺服器)
 wait $PID

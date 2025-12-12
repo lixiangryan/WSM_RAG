@@ -3,10 +3,13 @@
 # 1. 等待 Ollama 伺服器本身啟動
 echo "等待 Ollama 伺服器啟動..."
 attempts=0
-max_attempts=30 # 等待最多 60 秒
+max_attempts=60 # 等待最多 120 秒 (increased from 60s)
 until curl --output /dev/null --silent --fail http://ollama:11434/api/tags; do
     if [ $attempts -ge $max_attempts ]; then
         echo "錯誤: Ollama 伺服器未啟動。"
+        echo "嘗試連接 http://ollama:11434 失敗"
+        echo "正在嘗試診斷網路連接..."
+        ping -c 3 ollama || echo "無法 ping ollama 主機"
         exit 1
     fi
     printf '.'
