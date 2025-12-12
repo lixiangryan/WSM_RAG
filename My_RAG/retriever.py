@@ -1,199 +1,209 @@
 from typing import Any, Dict, List, Optional, Tuple
 
+import os
+import re
 import numpy as np
 import jieba
+import math
 from rank_bm25 import BM25Okapi
 
 from generator import load_ollama_config
 
-try:
-    from ollama import Client
-except ImportError:
-    Client = None
-try:
-    from sentence_transformers import SentenceTransformer
-except ImportError:
-    SentenceTransformer = None
+# ==========================================
+# 1. Dense DenseRetriever Configuration: 中英文調整
+# ==========================================
+class RAGConfig: 
+    SETTINGS = {
+        "zh": {
+            #"vector_model": "qwen2.5:0.5b",       # 中文模型
+            "bm25_tokenizer": "jieba",            
+            "weights": {"bm25": 0.4, "vec": 0.6}, 
+        },
+        "en": {
+            #"vector_model": "nomic-embed-text",   # 英文模型
+            "bm25_tokenizer": "space",
+            "weights": {"bm25": 0.5, "vec": 0.5}, 
+        }
+    }
+    
 
+    #避免傳入未知語言（傳入例外語言視爲英文）
+    @classmethod
+    def get(cls, lang, key):
+        cfg = cls.SETTINGS.get(lang, cls.SETTINGS["en"])
+        return cfg.get(key)
 
-def _safe_cosine(a: Optional[np.ndarray], b: Optional[np.ndarray]) -> float:
-    if a is None or b is None or a.size == 0 or b.size == 0:
-        return 0.0
-    denom = float(np.linalg.norm(a) * np.linalg.norm(b))
-    if denom == 0:
-        return 0.0
-    return float(np.dot(a, b) / denom)
+# ==========================================
+# 2. 檢索模型 (Retrieval Models)
+# ==========================================
 
-
-class HybridRetriever:
+class SparseRetriever:
     """
-    Hybrid retrieval = BM25 + Embedding similarity, followed by optional LLM rerank.
-    BM25 provides exact token recall, embeddings broaden semantics, reranker sharpens the top list.
+    BM25
     """
-
-    def __init__(
-        self,
-        chunks: List[Dict[str, Any]],
-        language: str = "en",
-        alpha: float = 0.5,
-        bm25_top_n: int = 50,
-        embed_top_n: int = 50,
-        rerank_top_n: int = 50,
-        rerank_model: Optional[str] = None,
-        embedding_model: Optional[str] = None,
-        dense_model: Optional[str] = None,
-        client: Optional[Any] = None,
-    ):
+    def __init__(self, chunks, language):
+        #"page_content"抓出來
+        self.corpus = [chunk["page_content"] for chunk in chunks]
         self.language = language
-        self.chunks = [
-            c
-            for c in chunks
-            if not language
-            or c.get("metadata", {}).get("language") == language
-            or c.get("language") == language
-        ]
-        self.alpha = alpha
-        self.bm25_top_n = bm25_top_n
-        self.embed_top_n = embed_top_n
-        self.rerank_top_n = rerank_top_n
-
-        self.corpus = [chunk["page_content"] for chunk in self.chunks]
-        self.tokenized_corpus = [self._tokenize(doc) for doc in self.corpus]
+        self.tokenizer_type = RAGConfig.get(language, "bm25_tokenizer")
+        
+        # 建立索引
+        if self.tokenizer_type == "jieba":
+            self.tokenized_corpus = [list(jieba.cut(doc)) for doc in self.corpus]
+        else:
+            self.tokenized_corpus = [doc.lower().split(" ") for doc in self.corpus]
+            
         self.bm25 = BM25Okapi(self.tokenized_corpus)
 
-        self.ollama_client = client # Use passed client
-        self.embedding_model = embedding_model
-        self.rerank_model = rerank_model
-        self.dense_model_name = dense_model
-        self.dense_encoder: Optional[SentenceTransformer] = None
-        self.chunk_embeddings: List[Optional[np.ndarray]] = [None] * len(self.chunks)
+    def search(self, query, top_k=50):
+        # 處理 Query
+        if self.tokenizer_type == "jieba":
+            tokenized_query = list(jieba.cut(query))
+        else:
+            tokenized_query = query.lower().split(" ")
 
-        if self.ollama_client:
-             try:
-                config = load_ollama_config()
-                # host = config.get("host", "http://localhost:11434") # Host is handled by client
-                # self.ollama_client = Client(host=host) # Removed
-                self.embedding_model = embedding_model or config.get("embedding_model") or config.get("model")
-                self.rerank_model = rerank_model or config.get("rerank_model") or config.get("model")
-             except Exception:
-                # self.ollama_client = None # Don't set to None if passed, just maybe warn?
-                pass
+        scores = self.bm25.get_scores(tokenized_query)
+        
+        # 格式化輸出: List of (index, score)
+        results = []
+        for idx, score in enumerate(scores):
+            # 過濾掉分數極低或為 0 的結果
+            if score > 1e-5: 
+                results.append((idx, score))
+        
+        results.sort(key=lambda x: x[1], reverse=True)
+        return results[:top_k]
+    
+class RelevanceClassifier:
+    """
+    目前實作：基於規則 (Heuristic) 的分類器。
+    進階實作：你可以訓練一個 Logistic Regression 或使用 Cross-Encoder 來取代這裡的邏輯。
+    """
+    def predict_score(self, query, chunk_content, original_score):
+        if original_score == 0:
+            return original_score
 
-        if SentenceTransformer is not None:
-            try:
-                config = load_ollama_config()
-                self.dense_model_name = dense_model or config.get("dense_model") or "sentence-transformers/all-MiniLM-L6-v2"
-                self.dense_encoder = SentenceTransformer(self.dense_model_name)
-            except Exception:
-                self.dense_encoder = None
+        boost = 0.0
+        content_lower = chunk_content.lower()
+        
+        # Feature 1: 年份
+        query_years = re.findall(r"\d{4}", query)
+        if query_years:
+            #文章含有連續4個數字的數量
+            doc_years_all = re.findall(r"\d{4}", content_lower)
+            num_years_in_doc = len(doc_years_all)
+            match_count = sum(1 for y in query_years if y in content_lower)
 
-        if self.ollama_client and self.embedding_model:
-            self._precompute_embeddings()
-        elif self.dense_encoder:
-            self._precompute_embeddings()
+            if match_count > 0:
+                # 懲罰係數：log(x + 2)
+                density_penalty = math.log(num_years_in_doc + 2)
+                year_boost = (0.05 * match_count) / density_penalty
+                boost += year_boost
+            
+            else:
+                boost += 0.05
 
-    def _tokenize(self, text: str):
-        if self.language == "zh":
-            return list(jieba.cut(text))
-        return text.split()
+        
+        # Feature 2: 懲罰query
+        """
+        query_terms = set(re.findall(r"\w+", query.lower()))
+        chunk_terms = set(re.findall(r"\w+", content_lower))
+        if len(query_terms) > 0:
+            overlap = len(query_terms & chunk_terms)
+            overlap_ratio = overlap / len(query_terms) 
+            boost += overlap_ratio * 0.05
+        """
 
-    def _embed_text(self, text: str) -> Optional[np.ndarray]:
-        if self.dense_encoder is not None:
-            try:
-                return np.asarray(self.dense_encoder.encode(text, normalize_embeddings=True))
-            except Exception:
-                return None
-        if self.ollama_client and self.embedding_model:
-            try:
-                resp = self.ollama_client.embeddings(model=self.embedding_model, prompt=text)
-                embedding = resp.get("embedding") or (resp.get("data") or [{}])[0].get("embedding")
-                return np.array(embedding, dtype=float) if embedding else None
-            except Exception:
-                return None
-        return None
+        final_score = original_score * (1 + boost)
+        return final_score
 
-    def _precompute_embeddings(self):
-        for idx, text in enumerate(self.corpus):
-            self.chunk_embeddings[idx] = self._embed_text(text)
 
-    def _hybrid_scores(self, query_tokens: List[str], query_embedding: Optional[np.ndarray]) -> List[Tuple[int, float]]:
-        bm25_scores = self.bm25.get_scores(query_tokens)
+# ==========================================
+# 4. 主流程 (Main Pipeline)
+#    對應作業：Fusion
+# ==========================================
 
-        bm25_top_idx = np.argsort(bm25_scores)[::-1][: self.bm25_top_n]
+class EnsembleRetriever:
+    def __init__(self, chunks, language="en"):
+        self.chunks = chunks
+        self.language = language
+        self.weights = RAGConfig.get(language, "weights")
+        
+        # 初始化模型
+        self.bm25_retriever = SparseRetriever(chunks, language)
+        #self.vector_retriever = DenseRetriever(chunks, language)
+        self.classifier = RelevanceClassifier()
 
-        embed_scores = np.zeros(len(self.chunks))
-        if query_embedding is not None:
-            for idx, emb in enumerate(self.chunk_embeddings):
-                if emb is not None:
-                    embed_scores[idx] = _safe_cosine(query_embedding, emb)
-        embed_top_idx = np.argsort(embed_scores)[::-1][: self.embed_top_n]
+    def _normalize(self, results):
+        """
+        Normalization: 將分數映射到 [0, 1]
+        BM25: 0 ~ inf -> 0 ~ 1
+        Vector: -1 ~ 1 -> 0 ~ 1
+        """
+        if not results: return {}
+        
+        scores = [r[1] for r in results]
+        min_s, max_s = min(scores), max(scores)
+        
+        norm_map = {}
+        for idx, score in results:
+            if max_s - min_s == 0:
+                #避免除0
+                norm_map[idx] = 1.0 if max_s > 0 else 0.0
+            else:
+                norm_map[idx] = (score - min_s) / (max_s - min_s)
+        return norm_map
 
-        candidate_indices = set(bm25_top_idx.tolist() + embed_top_idx.tolist())
+    def retrieve(self, query, top_k=10):
+        # 1. 雙路召回 (Retrieval)
+        # 為了融合效果，這裡取較多的候選集 (top_k * 3)
+        candidates_k = top_k * 3
+        bm25_res = self.bm25_retriever.search(query, top_k=candidates_k)
+        #vec_res = self.vector_retriever.search(query, top_k=candidates_k)
 
-        hybrid = []
-        for idx in candidate_indices:
-            bm25_score = bm25_scores[idx]
-            embed_score = embed_scores[idx] if query_embedding is not None else 0.0
-            combined = self.alpha * bm25_score + (1 - self.alpha) * embed_score
-            hybrid.append((idx, combined))
+        # 2. 分數歸一化 (Normalization)
+        bm25_norm = self._normalize(bm25_res)
+        #vec_norm = self._normalize(vec_res)
 
-        hybrid.sort(key=lambda x: x[1], reverse=True)
-        return hybrid
+        # 3. 加權融合 (Weighted Sum Fusion)
+        all_indices = set(bm25_norm.keys())
+        merged_results = []
+        
+        #alpha = self.weights["vec"]
+        #beta = self.weights["bm25"]
 
-    def _rerank(self, query: str, candidates: List[Tuple[int, float]]) -> List[Tuple[int, float]]:
-        if not self.ollama_client or not self.rerank_model:
-            return candidates
+        for idx in all_indices:
+            s_bm25 = bm25_norm.get(idx, 0.0)
+            #s_vec = vec_norm.get(idx, 0.0)
+            
+            # hybrid+信心
+            #fusion_score = (beta * s_bm25) + (alpha * s_vec)
+            fusion_score = s_bm25
+            if s_bm25 > 0:
+                fusion_score *= 1.1
+            
+            merged_results.append({
+                "index": idx,
+                "score": fusion_score,
+                "chunk": self.chunks[idx]
+            })
 
-        reranked: List[Tuple[int, float]] = []
-        for idx, _ in candidates[: self.rerank_top_n]:
-            doc = self.chunks[idx]["page_content"]
-            prompt = (
-                "Given the query and document, provide a single relevance score between 0 and 1. "
-                "Respond with only the number.\n"
-                f"Query: {query}\n"
-                f"Document: {doc}\n"
-                "Relevance score:"
+        # 4. Re-ranking (使用 Classifier / Heuristic)
+        # 這是作業的 Advanced Task 部分
+        for item in merged_results:
+            new_score = self.classifier.predict_score(
+                query, 
+                item["chunk"]["page_content"], 
+                item["score"]
             )
-            try:
-                resp = self.ollama_client.generate(model=self.rerank_model, prompt=prompt)
-                text = resp.get("response", "").strip()
-                score = float(text.split()[0])
-            except Exception:
-                score = 0.0
-            reranked.append((idx, score))
+            item["score"] = new_score
 
-        reranked.sort(key=lambda x: x[1], reverse=True)
-        return reranked
+        # 5. 最終排序
+        merged_results.sort(key=lambda x: x["score"], reverse=True)
+        final_top_chunks = [item["chunk"] for item in merged_results[:top_k]]
+        #assert final_top_chunks != [], "Final top chunks should not be empty."
+        return final_top_chunks
 
-    def retrieve(self, query: str, top_k: int = 5):
-        query_tokens = self._tokenize(query)
-        query_embedding = self._embed_text(query) if self.ollama_client and self.embedding_model else None
-
-        hybrid_candidates = self._hybrid_scores(query_tokens, query_embedding)
-        reranked = self._rerank(query, hybrid_candidates)
-
-        final = reranked[:top_k]
-        return [self.chunks[idx] for idx, _ in final]
-
-
-def create_retriever(
-    chunks: List[Dict[str, Any]],
-    language: str,
-    alpha: float = 0.5,
-    bm25_top_n: int = 50,
-    embed_top_n: int = 50,
-    rerank_top_n: int = 50,
-    dense_model: Optional[str] = None,
-    client: Optional[Any] = None,
-):
-    """Creates a hybrid retriever that mixes BM25, embeddings, and an optional reranker."""
-    return HybridRetriever(
-        chunks,
-        language,
-        alpha=alpha,
-        bm25_top_n=bm25_top_n,
-        embed_top_n=embed_top_n,
-        rerank_top_n=rerank_top_n,
-        dense_model=dense_model,
-        client=client,
-    )
+def create_retriever(chunks, language):
+    # assert chunks == [], "Chunks should not be empty."
+    return EnsembleRetriever(chunks, language)
