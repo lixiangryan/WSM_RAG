@@ -7,6 +7,9 @@ WORKDIR /app
 # [新增] 安裝 curl 和 jq 工具
 RUN apt-get update && apt-get install -y curl jq
 
+# [環境變數] 指定 Hugging Face Cache 路徑，確保 Build 和 Runtime 一致
+ENV HF_HOME=/app/model_cache
+
 # 複製 requirements.txt 並安裝相依套件
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

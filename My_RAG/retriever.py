@@ -24,39 +24,79 @@ class RemoteFlagReranker:
     Fake FlagReranker class: same interface as the official one (FlagEmbedding),
     but internally calls a remote API. Adapts to CrossEncoder interface via predict().
     """
-    def __init__(self, api_url: str):
-        self.api_url = api_url
+class RemoteFlagReranker:
+    """
+    Fake FlagReranker class with Failover support:
+    1. Probes a list of candidate API URLs.
+    2. Selects the first available one tailored for BAAI/bge-reranker-v2-m3.
+    """
+    def __init__(self, primary_url: str = None):
+        self.working_url = None
+        
+        # 定義候選清單
+        candidates = []
+        if primary_url:
+            candidates.append(primary_url)
+            
+        defaults = [
+            "http://ollama-gateway:11434/rerank",
+            "http://ollama:11434/rerank",
+            "http://localhost:11434/rerank",
+            "http://127.0.0.1:11434/rerank"
+        ]
+        
+        for url in defaults:
+            if url not in candidates:
+                candidates.append(url)
+                
+        # 尋找可用的 Host
+        self.working_url = self._find_working_url(candidates)
+        
+        if not self.working_url and primary_url:
+             # 如果檢查都失敗，還是設為主要 URL 以便讓它在 runtime 報錯而不是 init 就掛
+            self.working_url = primary_url
+
+    def _find_working_url(self, candidates):
+        for url in candidates:
+            if self.check_connectivity(url):
+                print(f"[Reranker] Connected to Remote API at {url}")
+                return url
+        print("[Reranker] Warning: No reachable remote API found during init.")
+        return None
 
     def compute_score(self, pairs, max_length=1024):
+        if not self.working_url:
+            # 嘗試重新尋找 (以防服務稍後才啟動)
+            print("[Reranker] Retry finding remote API...")
+            self.__init__()
+            if not self.working_url:
+                 # 真的沒救了
+                 return np.array([0.0] * len(pairs))
+
         # Strict Limit: Each API call supports at most 32 pairs.
         batch_size = 32
         all_scores = []
         
         for i in range(0, len(pairs), batch_size):
             batch = pairs[i : i + batch_size]
-            # [Correction] Remove client-side char slicing. 
-            # The server handles truncation based on TOKENS (approx 1024 tokens).
-            # Slicing by chars [:1024] is too aggressive and incorrect.
             payload = {"pairs": [{"text1": str(a), "text2": str(b)} for a, b in batch]}
             
             try:
-                resp = requests.post(self.api_url, json=payload, timeout=30)
+                resp = requests.post(self.working_url, json=payload, timeout=30)
                 if resp.status_code != 200:
                     print(f"Warning: Remote Reranker API failed ({resp.status_code}): {resp.text}")
-                    # Return 0 scores for this batch on error to avoid crash
                     all_scores.extend([0.0] * len(batch))
                     continue
                     
                 scores = resp.json().get("scores", [])
                 all_scores.extend(scores)
             except Exception as e:
-                print(f"Error calling Remote Reranker: {e}")
+                print(f"Error calling Remote Reranker at {self.working_url}: {e}")
                 all_scores.extend([0.0] * len(batch))
 
         return np.array(all_scores)
 
     def predict(self, pairs):
-        # Alias for CrossEncoder compatibility
         return self.compute_score(pairs)
     
     @staticmethod
@@ -112,12 +152,21 @@ class HybridRetriever:
         self.dense_encoder = None
         self.chunk_embeddings = None
         if SentenceTransformer:
-            self.dense_encoder = SentenceTransformer(embedding_model_name)
-            # 預計算所有 chunks 的向量 (實務上這步應該在存資料庫時就做好了，不要每次 init 做)
-            # 這裡使用 encode(show_progress_bar=False) 且直接轉 numpy，比迴圈快
-            self.chunk_embeddings = self.dense_encoder.encode(
-                self.corpus, convert_to_numpy=True, normalize_embeddings=True
-            )
+            try:
+                print(f"[Retriever] Attempting to load {embedding_model_name} from local cache...")
+                self.dense_encoder = SentenceTransformer(embedding_model_name, local_files_only=True)
+                print(f"[Retriever] Successfully loaded {embedding_model_name}.")
+                
+                # 預計算所有 chunks 的向量
+                self.chunk_embeddings = self.dense_encoder.encode(
+                    self.corpus, convert_to_numpy=True, normalize_embeddings=True
+                )
+            except Exception as e:
+                print(f"[Retriever] ERROR: Local cache for {embedding_model_name} not found.")
+                print(f"[Retriever] STRICT OFFLINE MODE: Skipping online download.")
+                print(f"[Retriever] Vector Retrieval disabled. Falling back to BM25 only.")
+                self.dense_encoder = None
+                self.chunk_embeddings = None
 
         # 4. 初始化 Reranker (Hybrid: Local vs Remote)
         self.reranker = None
@@ -143,19 +192,36 @@ class HybridRetriever:
                     print(f"[Reranker] Remote API detected at {remote_url}. Using Remote (Safer for Submission Env).")
                     use_remote = True
                 else:
-                    print(f"[Reranker] Remote API unreachable at {remote_url}. Falling back to Local.")
-                    use_remote = False
+                    print(f"[Reranker] Remote API unreachable at {remote_url}.")
+                    print(f"[Reranker] Auto mode: Disabling Reranker (use RERANKER_TYPE=local to force local load).")
+                    use_remote = None  # 特殊標記：不用 Remote 也不用 Local
             
-            if use_remote:
+            if use_remote is True:
                 self.reranker = RemoteFlagReranker(remote_url)
-            elif CrossEncoder:
+            elif use_remote is False:  # 明確要求 local
                 print(f"[Reranker] Using Local GPU: {rerank_model_name}")
-                self.reranker = CrossEncoder(rerank_model_name)
-            else:
-                print("[Reranker] Warning: No GPU/CrossEncoder and no Remote API found. Reranking disabled or degraded.")
-                # We could try Remote anyway or just fail gracefully?
-                # Let's try Remote one last time in case probe failed flakily
-                self.reranker = RemoteFlagReranker(remote_url)
+                # 嘗試載入 Local，可能會失敗（沒模型或沒網）
+                try:
+                     os.environ["HF_HUB_OFFLINE"] = "1"
+                     try:
+                        self.reranker = CrossEncoder(rerank_model_name) 
+                     finally:
+                        if "HF_HUB_OFFLINE" in os.environ:
+                            del os.environ["HF_HUB_OFFLINE"]
+                except Exception as e:
+                     print(f"[Reranker] Failed to load Local CrossEncoder ({e}). Disabling Reranking.")
+                     self.reranker = None
+            else:  # use_remote is None (auto mode decided to disable)
+                print("[Reranker] Reranking disabled.")
+                self.reranker = None
+                
+        # [Safety Check] 如果 Vector Model 載入失敗，我們就不能用 RRF，必須強制降級為 BM25 Retriever
+        if self.dense_encoder is None:
+             print("[Retriever] Downgrading to pure BM25 due to missing Embedding Model.")
+             self.use_reranker = False # 雖然 Reranker API 還能用，但沒有 Vector 就不用 RRF 了，簡單點
+             # 或者我們可以保留 Reranker 只要給 BM25 的結果做 Rerank？
+             # 目前架構是 RRF 融合後再 Rerank。如果沒有 Vector，就只有 BM25。
+             # BM25 -> Rerank 是可行的。保留 Reranker。
 
         # 5. 初始化 Knowledge Graph (NEW)
         self.kg = SimpleKnowledgeGraph(chunks, index_path=index_path)

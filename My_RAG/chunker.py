@@ -7,8 +7,18 @@ MAX_CHUNK_SIZE = 12
 
 class Chunker:
     def __init__(self, model_name="BAAI/bge-m3", threshold=0.5):
-        self.model = SentenceTransformer(model_name)
-        self.threshold = threshold  # 低於 threshold 的句子會被合併
+        self.model = None
+        self.threshold = threshold
+        
+        try:
+            print(f"[Chunker] Attempting to load {model_name} from local cache...")
+            self.model = SentenceTransformer(model_name, local_files_only=True)
+            print(f"[Chunker] Successfully loaded {model_name}.")
+        except Exception as e:
+            print(f"[Chunker] ERROR: Local cache for {model_name} not found. ")
+            print(f"[Chunker] STRICT OFFLINE MODE: Skipping online download to protect submission env.")
+            print(f"[Chunker] Semantic Chunking disabled. Falling back to Basic Sliding Window.")
+            self.model = None
 
     def spilt_txt_into_sentences(self, text, chunk_size=500, chunk_overlap=50):
         # 使用正則表達式進行句子切分 (保留標點)
@@ -17,6 +27,33 @@ class Chunker:
 
     def chunk_documents(self, docs, language):
         all_chunks = []
+        
+        # === Fallback Logic ===
+        if self.model is None:
+            # 使用 Basic Sliding Window 切分 (原始邏輯)
+            print("[Chunker] Running Basic Sliding Window Chunking (Fallback)...")
+            chunk_size = 1000
+            chunk_overlap = 200
+            for doc_index, doc in enumerate(docs):
+                content = doc.get("content", "")
+                if not content: continue
+                
+                text_len = len(content)
+                start_index = 0
+                while start_index < text_len:
+                    end_index = min(start_index + chunk_size, text_len)
+                    chunk_metadata = doc.copy()
+                    chunk_metadata.pop("content", None)
+                    
+                    chunk = {
+                        "page_content": content[start_index:end_index],
+                        "metadata": chunk_metadata
+                    }
+                    all_chunks.append(chunk)
+                    start_index += chunk_size - chunk_overlap
+            return all_chunks
+        
+        # === Semantic Chunking Logic ===
         print("開始進行語意切分 (Semantic Chunking)...")
         # 這裡會下載或載入 BAAI/bge-m3，需確保有網路或已預下載
         
