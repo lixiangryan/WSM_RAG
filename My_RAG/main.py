@@ -133,7 +133,7 @@ def main(query_path, docs_path, language, output_path):
         raise ConnectionError("Failed to connect to any Ollama host.")
     # --- End Ollama Client Instantiation ---
 
-    retriever = create_retriever(chunks, language)
+    retriever = create_retriever(chunks, language, ollama_client)
     print("Retriever created successfully.")
 
 

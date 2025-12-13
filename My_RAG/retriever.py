@@ -7,13 +7,16 @@ import re
 from rank_bm25 import BM25Okapi
 import ollama
 import math
+import requests
+
+RERANK_API_URL = "http://ollama-gateway:11434/rerank"
 # ==========================================
 # 1. Retriever Configuration
 # ==========================================
 class RAGConfig:
     SETTINGS = {
         "zh": {
-            "vector_model": "qwen2.5:0.5b",       # 中文模型
+            "vector_model": "nomic-embed-text",       # 中文模型
             "bm25_tokenizer": "jieba",            
             "weights": {"bm25": 0.4, "vec": 0.6}, 
         },
@@ -52,90 +55,84 @@ class SparseRetriever:
             
         self.bm25 = BM25Okapi(self.tokenized_corpus)
 
-    def search(self, query, top_k=50):
-        # 處理 Query
+    def search(self, query, top_k=50) -> Dict[int, float]:
         if self.tokenizer_type == "jieba":
             tokenized_query = list(jieba.cut(query))
         else:
             tokenized_query = query.lower().split(" ")
-
+            
         scores = self.bm25.get_scores(tokenized_query)
         
-        # 格式化輸出: List of (index, score)
-        results = []
-        for idx, score in enumerate(scores):
-            # 過濾掉分數極低或為 0 的結果
-            if score > 1e-5: 
-                results.append((idx, score))
-        
-        results.sort(key=lambda x: x[1], reverse=True)
-        return results[:top_k]
+        results = {}
+        top_k_indices = np.argsort(scores)[::-1][:top_k]
+        for idx in top_k_indices:
+            # 只取分數大於 0 的結果
+            if scores[idx] > 0:
+                results[idx] = scores[idx]
+        return results
 
-class DenseRetriever:
+class VectorRetriever:
     """
-    模型 2: Vector Search 
+    向量檢索 (Vector Retrieval)
+    使用 Ollama 進行 Embedding
     """
-    def __init__(self, chunks, language):
+    def __init__(self, chunks, language, client):
         self.chunks = chunks
         self.language = language
-        self.model = RAGConfig.get(language, "vector_model")
-        self.embeddings = []
+        self.model_name = RAGConfig.get(language, "vector_model")
+        self.client = client
+        self.corpus = [chunk["page_content"] for chunk in chunks]
+        self.embeddings = self._index_documents()
         
-        # 程式剛開始跑，先花時間把所有文件轉換成向量存起來 (Indexing)
-        self._build_index()
-
-    def _get_embedding(self, text):
-        #檢查Ollama
-        if not ollama: return np.zeros(768)
+    def _index_documents(self):
+        print(f"[{self.language}] Vector Indexing start...")
         try:
-            # 使用 Ollama API
-            resp = ollama.embeddings(model=self.model, prompt=text)
-            return np.array(resp["embedding"])
+            # 這是 Ollama Embedding API 的呼叫方式
+            res = self.client.embed(
+                model=self.model_name,
+                texts=self.corpus,
+            )
+            return np.array(res['embeddings'])
         except Exception as e:
             print(f"[Error] Embedding failed: {e}")
-            return np.zeros(768)
-
-    def _build_index(self):
-        print(f"[{self.language}] Vector Indexing start...")
-        for chunk in self.chunks:
-            vec = self._get_embedding(chunk["page_content"])
-            self.embeddings.append(vec)
-        #將矩陣轉換成array
-        self.embeddings = np.array(self.embeddings)
-
-    def search(self, query, top_k=50):
-        query_vec = self._get_embedding(query)
-
-        #檢查是否轉換失敗或資料庫是空的
-        if query_vec is None or len(self.embeddings) == 0:
-            return []
-
-        # Cosine Similarity 計算
-        #query向量的長度（｜A｜）
-        q_norm = np.linalg.norm(query_vec)
-        #所有文章向量的長度（｜B｜）
-        d_norms = np.linalg.norm(self.embeddings, axis=1)
+            return np.array([])
+    
+    def search(self, query: str, top_k=50) -> Dict[int, float]:
+        if len(self.embeddings) == 0:
+            return {}
         
-        # 避免除以 0
-        d_norms[d_norms == 0] = 1e-10
-        if q_norm == 0: q_norm = 1e-10
-
-        dot_products = np.dot(self.embeddings, query_vec)
-        similarities = dot_products / (q_norm * d_norms)
-
-        results = [(i, float(score)) for i, score in enumerate(similarities)]
-        results.sort(key=lambda x: x[1], reverse=True)
-        return results[:top_k]
-
+        try:
+            # 取得 Query 的 Embedding
+            res = self.client.embed(
+                model=self.model_name,
+                texts=[query],
+            )
+            query_embedding = np.array(res['embeddings'][0])
+        except Exception as e:
+            print(f"[Error] Query Embedding failed: {e}")
+            return {}
+        
+        # 計算餘弦相似度 (Cosine Similarity)
+        # 簡單計算 dot product，因為向量已在 Ollama 服務器端正規化 (假設)
+        # 也可以使用 sklearn.metrics.pairwise.cosine_similarity
+        
+        # 計算點積（與餘弦相似度成正比，因為都是正規化過的）
+        scores = np.dot(self.embeddings, query_embedding)
+        
+        results = {}
+        # 取得 Top-K 的索引
+        top_k_indices = np.argsort(scores)[::-1][:top_k]
+        
+        for idx in top_k_indices:
+            # 相似度通常在 0 到 1 之間 (如果向量已正規化)
+            results[idx] = scores[idx] 
+            
+        return results
 # ==========================================
 # 3. Re-ranking
 # ==========================================
-
+"""
 class RelevanceClassifier:
-    """
-    目前實作：基於規則 (Heuristic) 的分類器。
-    進階實作：你可以訓練一個 Logistic Regression 或使用 Cross-Encoder 來取代這裡的邏輯。
-    """
     def predict_score(self, query, chunk_content, original_score):
         if original_score == 0:
             return original_score
@@ -162,63 +159,106 @@ class RelevanceClassifier:
 
         
         # Feature 2: 懲罰query
-        """
         query_terms = set(re.findall(r"\w+", query.lower()))
         chunk_terms = set(re.findall(r"\w+", content_lower))
         if len(query_terms) > 0:
             overlap = len(query_terms & chunk_terms)
             overlap_ratio = overlap / len(query_terms) 
             boost += overlap_ratio * 0.05
-        """
+        
 
         final_score = original_score * (1 + boost)
         return final_score
+"""
 
+class RemoteFlagReranker:
+    """
+    Fake FlagReranker class: same interface as the official one (BAAI/bge-reranker-v2-m3), 
+    but internally calls a remote API. 
+    增加了批次處理 (Batching) 和錯誤處理。
+    """
+    def __init__(self, api_url: str):
+        self.api_url = api_url
+
+    def compute_score(self, pairs, max_length=1024):
+        """
+        pairs: list of [text1, text2]
+        return: score of each pair in np.ndarray
+        """
+        MAX_PAIRS_PER_CALL = 32 # 助教提到的 API 限制
+        all_scores = []
+        
+        # 實作批次處理 (Batching)
+        for i in range(0, len(pairs), MAX_PAIRS_PER_CALL):
+            batch_pairs = pairs[i:i + MAX_PAIRS_PER_CALL]
+            
+            # 轉換為 API 要求的 payload 格式
+            payload = {"pairs": [{"text1": a, "text2": b} for a, b in batch_pairs]}
+
+            try:
+                # 設置 Timeout 以防止無限等待
+                resp = requests.post(self.api_url, json=payload, timeout=5) 
+                
+                if resp.status_code != 200:
+                    print(f"[Reranker API Error] Request failed ({resp.status_code}): {resp.text}")
+                    # 如果 API 失敗，回傳零分，避免程式中斷
+                    all_scores.extend(np.zeros(len(batch_pairs)).tolist())
+                    continue
+                
+                scores = resp.json()["scores"]
+                all_scores.extend(scores)
+
+            except requests.exceptions.RequestException as e:
+                 # 連線層級失敗，回傳零分
+                 print(f"[Reranker Connection Error] Failed to connect to API: {e}. Returning zero scores for batch.")
+                 all_scores.extend(np.zeros(len(batch_pairs)).tolist())
+        
+        return np.array(all_scores)
 # ==========================================
 # 4. 主流程 (Main Pipeline)
 #    對應作業：Fusion
 # ==========================================
 
 class EnsembleRetriever:
-    def __init__(self, chunks, language="en"):
+    def __init__(self, chunks, language, client):
         self.chunks = chunks
         self.language = language
         self.weights = RAGConfig.get(language, "weights")
         
         # 初始化模型
-        self.bm25_retriever = SparseRetriever(chunks, language)
-        self.vector_retriever = DenseRetriever(chunks, language)
-        self.classifier = RelevanceClassifier()
+        self.sparse_retriever = SparseRetriever(chunks, language)
+        self.vector_retriever = VectorRetriever(chunks, language, client)
+        self.classifier = RemoteFlagReranker(api_url=RERANK_API_URL)
 
-    def _normalize(self, results):
-        """
-        Normalization: 將分數映射到 [0, 1]
-        BM25: 0 ~ inf -> 0 ~ 1
-        Vector: -1 ~ 1 -> 0 ~ 1
-        """
-        if not results: return {}
+    def _normalize(self, results: Dict[int, float]) -> Dict[int, float]:
+        """將分數正規化到 [0, 1] 之間，用於融合"""
+        if not results:
+            return {}
         
-        scores = [r[1] for r in results]
-        min_s, max_s = min(scores), max(scores)
+        scores = np.array(list(results.values()))
+        if np.max(scores) == 0:
+            return {k: 0.0 for k in results.keys()}
         
-        norm_map = {}
-        for idx, score in results:
-            if max_s - min_s == 0:
-                #避免除0
-                norm_map[idx] = 1.0 if max_s > 0 else 0.0
-            else:
-                norm_map[idx] = (score - min_s) / (max_s - min_s)
-        return norm_map
+        min_score = np.min(scores)
+        max_score = np.max(scores)
+        
+        # 避免除以零
+        if max_score - min_score < 1e-6:
+            # 如果所有分數都一樣，直接設定為 0.5 (或 1.0)
+            return {k: 1.0 for k in results.keys()}
 
-    def retrieve(self, query, top_k=10):
-        # 1. 雙路召回 (Retrieval)
-        # 為了融合效果，這裡取較多的候選集 (top_k * 3)
-        candidates_k = top_k * 3
-        bm25_res = self.bm25_retriever.search(query, top_k=candidates_k)
-        vec_res = self.vector_retriever.search(query, top_k=candidates_k)
+        # Min-Max Normalization
+        normalized_scores = (scores - min_score) / (max_score - min_score)
+        
+        return dict(zip(results.keys(), normalized_scores))
 
-        # 2. 分數歸一化 (Normalization)
+    def retrieve(self, query: str, top_k: int) -> List[Dict[str, Any]]:
+        # 1. Sparse Retrieval
+        bm25_res = self.sparse_retriever.search(query)
         bm25_norm = self._normalize(bm25_res)
+        
+        # 2. Dense Retrieval
+        vec_res = self.vector_retriever.search(query)
         vec_norm = self._normalize(vec_res)
 
         # 3. 加權融合 (Weighted Sum Fusion)
@@ -232,7 +272,7 @@ class EnsembleRetriever:
             s_bm25 = bm25_norm.get(idx, 0.0)
             s_vec = vec_norm.get(idx, 0.0)
             
-            # hybrid+信心
+            # hybrid+信心：雙方都有分數時給予加乘
             fusion_score = (beta * s_bm25) + (alpha * s_vec)
             if s_bm25 > 0 and s_vec > 0:
                 fusion_score *= 1.1
@@ -243,22 +283,32 @@ class EnsembleRetriever:
                 "chunk": self.chunks[idx]
             })
 
-        # 4. Re-ranking (使用 Classifier / Heuristic)
-        # 這是作業的 Advanced Task 部分
-        for item in merged_results:
-            new_score = self.classifier.predict_score(
-                query, 
-                item["chunk"]["page_content"], 
-                item["score"]
-            )
-            item["score"] = new_score
+        # 4. Re-ranking (使用 RemoteFlagReranker 進行批次處理)
+        if merged_results:
+            # 建立 pairs 列表: [[query, chunk_content], [query, chunk_content], ...]
+            pairs_to_rerank = []
+            for item in merged_results:
+                pairs_to_rerank.append([query, item["chunk"]["page_content"]])
+            
+            # 呼叫遠程 API 計算分數 (RemoteFlagReranker 內部已處理 batching)
+            rerank_scores = self.classifier.compute_score(pairs_to_rerank) 
+
+            # 將新的重排分數寫回 merged_results
+            for i, item in enumerate(merged_results):
+                # 直接採用 Re-ranker 的分數作為新的最終分數 (這是 Cross-Encoder 的標準做法)
+                item["score"] = rerank_scores[i] 
 
         # 5. 最終排序
         merged_results.sort(key=lambda x: x["score"], reverse=True)
-        final_top_chunks = [item["chunk"] for item in merged_results[:top_k]]
-        #assert final_top_chunks != [], "Final top chunks should not be empty."
-        return final_top_chunks
+        
+        # 6. 返回 Top-K 結果
+        final_chunks_to_return = []
+        for item in merged_results[:top_k]:
+            # item['chunk'] 才是包含 'page_content' 的原始 chunk 字典
+            final_chunks_to_return.append(item['chunk']) 
 
-def create_retriever(chunks, language):
+        return final_chunks_to_return
+
+def create_retriever(chunks, language, client) -> EnsembleRetriever:
     # assert chunks == [], "Chunks should not be empty."
-    return EnsembleRetriever(chunks, language)
+    return EnsembleRetriever(chunks, language, client)

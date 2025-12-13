@@ -13,3 +13,4 @@ rouge_chinese
 openai
 pysbd
 langchain_text_splitters
+requests
