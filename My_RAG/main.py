@@ -109,7 +109,6 @@ def main(query_path, docs_path, language, output_path):
     print(f"Created {len(chunks)} chunks.")
 
     # 3. Create Retriever
-    # 3. Create Retriever
     print("Creating retriever...")
 
     # --- Ollama Client Instantiation ---
@@ -147,7 +146,7 @@ def main(query_path, docs_path, language, output_path):
         
         retrieved_chunks_list = []
         for q in all_queries:
-            retrieved_chunks_list.extend(retriever.retrieve(q, top_k=10)) # Retrieve top 10 for each query
+            retrieved_chunks_list.extend(retriever.retrieve(q, top_k=3)) # Retrieve top 3 for each query
 
         final_chunks = retrieved_chunks_list
         # --- End Multi-Query Enabled ---

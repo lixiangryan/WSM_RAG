@@ -201,7 +201,7 @@ class EnsembleRetriever:
         # 5. 最終排序
         merged_results.sort(key=lambda x: x["score"], reverse=True)
         final_top_chunks = [item["chunk"] for item in merged_results[:top_k]]
-        #assert final_top_chunks != [], "Final top chunks should not be empty."
+        #assert final_top_chunks != [], "Final top chunks should not be empty.
         return final_top_chunks
 
 def create_retriever(chunks, language):

@@ -28,6 +28,7 @@ def load_ollama_config() -> dict:
 
 def generate_answer(query, context_chunks, ollama_client):
     context = "\n\n".join([chunk['page_content'] for chunk in context_chunks])
+    #print("wwwwwwwwwwwwwwwwww_Context for answer generation:", context)
     prompt = f"""You are an assistant for question-answering tasks. \
 Use the following pieces of retrieved context to answer the question. \
 If you don't know the answer, just say that you don't know. \
@@ -35,7 +36,11 @@ Use three sentences maximum and keep the answer concise.\n\nQuestion: {query} \n
     
     model="granite4:3b"
     try:
-        response = ollama_client.generate(model=model, prompt=prompt)
+        response = ollama_client.generate(
+            model=model, 
+            prompt=prompt,
+            options={"num_ctx": 16384}
+            )
         return response["response"]
     except Exception as e:
         return f"Error generating answer: {e}"
