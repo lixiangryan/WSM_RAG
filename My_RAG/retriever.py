@@ -224,7 +224,8 @@ class HybridRetriever:
              # BM25 -> Rerank 是可行的。保留 Reranker。
 
         # 5. 初始化 Knowledge Graph (NEW)
-        self.kg = SimpleKnowledgeGraph(chunks, index_path=index_path)
+        # [FIX] Use filtered chunks to ensure index alignment
+        self.kg = SimpleKnowledgeGraph(self.chunks, index_path=index_path)
 
         try:
             config = load_ollama_config()
