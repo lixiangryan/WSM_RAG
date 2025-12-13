@@ -441,6 +441,10 @@ docker-compose up --build
 
 - **lixiang1202_optimize-rag-performance(1211)_part2**:
     - **LLM Scoring**: 實作 `_llm_cross_check`，讓 `granite4:3b` 對 Top-60 文件進行 0-10 分的相關性評分 (Pointwise)，作為最終排序依據。 (RTX 5090 Ultra Mode)
+- **uuuu_1211_sentencesTransformer(12131605)**:
+    - **Semantic Chunking**: 引入 `BAAI/bge-m3` 模型進行語意切分 (Semantic Chunking)。不再使用固定的字元長度切分，而是計算句子間的 Embedding 相似度 (Threshold=0.5)，將語意連貫的句子合併為一個 Chunk，提升檢索精準度。
+- **wang & esdese (2025-12-13 16:23)**:
+    - 評估 wang 與 esdese 分支後，確認目前 lixiang 分支功能已涵蓋並超越其內容，故略過合併。
 
 ## 🚀 未來工作 (Future Work)
 

@@ -9,13 +9,16 @@ def download_models():
     nltk.download('punkt_tab')
     
     # 指定我們要預下載的模型
-    model_name = "sentence-transformers/all-MiniLM-L6-v2"
-    print(f"Downloading SentenceTransformer model: {model_name}...")
+    models_to_download = [
+        "sentence-transformers/all-MiniLM-L6-v2", # Retriever Embedding
+        "BAAI/bge-m3"                               # Semantic Chunker
+    ]
     
-    # 這會將模型下載到預設的 cache 目錄 (/root/.cache/huggingface/hub)
-    # 之後在 Runtime 載入時，只要 cache_folder 沒變，它就會直接用
-    model = SentenceTransformer(model_name)
-    print("Model downloaded successfully.")
+    for model_name in models_to_download:
+        print(f"Downloading SentenceTransformer model: {model_name}...")
+        SentenceTransformer(model_name)
+    
+    print("All models downloaded successfully.")
 
 if __name__ == "__main__":
     download_models()
