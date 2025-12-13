@@ -1,31 +1,28 @@
 from typing import Any, Dict, List, Optional, Tuple
-
 import os
 import re
 import numpy as np
 import jieba
-import math
+import re
 from rank_bm25 import BM25Okapi
-
-from generator import load_ollama_config
-
+import ollama
+import math
 # ==========================================
-# 1. Dense DenseRetriever Configuration: 中英文調整
+# 1. Retriever Configuration
 # ==========================================
-class RAGConfig: 
+class RAGConfig:
     SETTINGS = {
         "zh": {
-            #"vector_model": "qwen2.5:0.5b",       # 中文模型
+            "vector_model": "qwen2.5:0.5b",       # 中文模型
             "bm25_tokenizer": "jieba",            
             "weights": {"bm25": 0.4, "vec": 0.6}, 
         },
         "en": {
-            #"vector_model": "nomic-embed-text",   # 英文模型
+            "vector_model": "nomic-embed-text",   # 英文模型
             "bm25_tokenizer": "space",
             "weights": {"bm25": 0.5, "vec": 0.5}, 
         }
     }
-    
 
     #避免傳入未知語言（傳入例外語言視爲英文）
     @classmethod
@@ -73,7 +70,67 @@ class SparseRetriever:
         
         results.sort(key=lambda x: x[1], reverse=True)
         return results[:top_k]
-    
+
+class DenseRetriever:
+    """
+    模型 2: Vector Search 
+    """
+    def __init__(self, chunks, language):
+        self.chunks = chunks
+        self.language = language
+        self.model = RAGConfig.get(language, "vector_model")
+        self.embeddings = []
+        
+        # 程式剛開始跑，先花時間把所有文件轉換成向量存起來 (Indexing)
+        self._build_index()
+
+    def _get_embedding(self, text):
+        #檢查Ollama
+        if not ollama: return np.zeros(768)
+        try:
+            # 使用 Ollama API
+            resp = ollama.embeddings(model=self.model, prompt=text)
+            return np.array(resp["embedding"])
+        except Exception as e:
+            print(f"[Error] Embedding failed: {e}")
+            return np.zeros(768)
+
+    def _build_index(self):
+        print(f"[{self.language}] Vector Indexing start...")
+        for chunk in self.chunks:
+            vec = self._get_embedding(chunk["page_content"])
+            self.embeddings.append(vec)
+        #將矩陣轉換成array
+        self.embeddings = np.array(self.embeddings)
+
+    def search(self, query, top_k=50):
+        query_vec = self._get_embedding(query)
+
+        #檢查是否轉換失敗或資料庫是空的
+        if query_vec is None or len(self.embeddings) == 0:
+            return []
+
+        # Cosine Similarity 計算
+        #query向量的長度（｜A｜）
+        q_norm = np.linalg.norm(query_vec)
+        #所有文章向量的長度（｜B｜）
+        d_norms = np.linalg.norm(self.embeddings, axis=1)
+        
+        # 避免除以 0
+        d_norms[d_norms == 0] = 1e-10
+        if q_norm == 0: q_norm = 1e-10
+
+        dot_products = np.dot(self.embeddings, query_vec)
+        similarities = dot_products / (q_norm * d_norms)
+
+        results = [(i, float(score)) for i, score in enumerate(similarities)]
+        results.sort(key=lambda x: x[1], reverse=True)
+        return results[:top_k]
+
+# ==========================================
+# 3. Re-ranking
+# ==========================================
+
 class RelevanceClassifier:
     """
     目前實作：基於規則 (Heuristic) 的分類器。
@@ -117,7 +174,6 @@ class RelevanceClassifier:
         final_score = original_score * (1 + boost)
         return final_score
 
-
 # ==========================================
 # 4. 主流程 (Main Pipeline)
 #    對應作業：Fusion
@@ -131,7 +187,7 @@ class EnsembleRetriever:
         
         # 初始化模型
         self.bm25_retriever = SparseRetriever(chunks, language)
-        #self.vector_retriever = DenseRetriever(chunks, language)
+        self.vector_retriever = DenseRetriever(chunks, language)
         self.classifier = RelevanceClassifier()
 
     def _normalize(self, results):
@@ -159,27 +215,26 @@ class EnsembleRetriever:
         # 為了融合效果，這裡取較多的候選集 (top_k * 3)
         candidates_k = top_k * 3
         bm25_res = self.bm25_retriever.search(query, top_k=candidates_k)
-        #vec_res = self.vector_retriever.search(query, top_k=candidates_k)
+        vec_res = self.vector_retriever.search(query, top_k=candidates_k)
 
         # 2. 分數歸一化 (Normalization)
         bm25_norm = self._normalize(bm25_res)
-        #vec_norm = self._normalize(vec_res)
+        vec_norm = self._normalize(vec_res)
 
         # 3. 加權融合 (Weighted Sum Fusion)
-        all_indices = set(bm25_norm.keys())
+        all_indices = set(bm25_norm.keys()) | set(vec_norm.keys())
         merged_results = []
         
-        #alpha = self.weights["vec"]
-        #beta = self.weights["bm25"]
+        alpha = self.weights["vec"]
+        beta = self.weights["bm25"]
 
         for idx in all_indices:
             s_bm25 = bm25_norm.get(idx, 0.0)
-            #s_vec = vec_norm.get(idx, 0.0)
+            s_vec = vec_norm.get(idx, 0.0)
             
             # hybrid+信心
-            #fusion_score = (beta * s_bm25) + (alpha * s_vec)
-            fusion_score = s_bm25
-            if s_bm25 > 0:
+            fusion_score = (beta * s_bm25) + (alpha * s_vec)
+            if s_bm25 > 0 and s_vec > 0:
                 fusion_score *= 1.1
             
             merged_results.append({
@@ -201,7 +256,7 @@ class EnsembleRetriever:
         # 5. 最終排序
         merged_results.sort(key=lambda x: x["score"], reverse=True)
         final_top_chunks = [item["chunk"] for item in merged_results[:top_k]]
-        #assert final_top_chunks != [], "Final top chunks should not be empty.
+        #assert final_top_chunks != [], "Final top chunks should not be empty."
         return final_top_chunks
 
 def create_retriever(chunks, language):
