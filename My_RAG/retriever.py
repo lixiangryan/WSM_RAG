@@ -16,7 +16,7 @@ RERANK_API_URL = "http://ollama-gateway:11434/rerank"
 class RAGConfig:
     SETTINGS = {
         "zh": {
-            "vector_model": "nomic-embed-text",       # 中文模型
+            "vector_model": "embeddinggemma",       # 中文模型
             "bm25_tokenizer": "jieba",            
             "weights": {"bm25": 0.4, "vec": 0.6}, 
         },
@@ -90,9 +90,13 @@ class VectorRetriever:
             # 這是 Ollama Embedding API 的呼叫方式
             res = self.client.embed(
                 model=self.model_name,
-                texts=self.corpus,
+                input=self.corpus,
             )
-            return np.array(res['embeddings'])
+            embeddings = np.array(res['embeddings'])
+            # 2. 加入成功的確認訊息
+            print(f"[SUCCESS] Vector model '{self.model_name}' indexed {len(embeddings)} chunks.")
+            return embeddings
+        
         except Exception as e:
             print(f"[Error] Embedding failed: {e}")
             return np.array([])
@@ -105,7 +109,7 @@ class VectorRetriever:
             # 取得 Query 的 Embedding
             res = self.client.embed(
                 model=self.model_name,
-                texts=[query],
+                input=[query],
             )
             query_embedding = np.array(res['embeddings'][0])
         except Exception as e:
@@ -295,7 +299,7 @@ class EnsembleRetriever:
 
             # 將新的重排分數寫回 merged_results
             for i, item in enumerate(merged_results):
-                # 直接採用 Re-ranker 的分數作為新的最終分數 (這是 Cross-Encoder 的標準做法)
+                # 直接採用 Re-ranker 的分數作為新的最終分數 ( Cross-Encoder )
                 item["score"] = rerank_scores[i] 
 
         # 5. 最終排序
