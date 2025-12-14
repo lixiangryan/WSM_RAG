@@ -12,7 +12,10 @@ class Chunker:
         
         try:
             print(f"[Chunker] Attempting to load {model_name} from local cache...")
-            self.model = SentenceTransformer(model_name, local_files_only=True)
+            # Use absolute path to avoid network checks in strict offline mode
+            model_path = "/home/lixiang/.cache/huggingface/hub/models--BAAI--bge-m3/snapshots/5617a9f61b028005a4858fdac845db406aefb181"
+            print(f"[Chunker] Loading model from {model_path}...")
+            self.model = SentenceTransformer(model_path, local_files_only=True)
             print(f"[Chunker] Successfully loaded {model_name}.")
         except Exception as e:
             print(f"[Chunker] ERROR: Local cache for {model_name} not found. ")

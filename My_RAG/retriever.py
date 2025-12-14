@@ -30,31 +30,28 @@ class RemoteFlagReranker:
     1. Probes a list of candidate API URLs.
     2. Selects the first available one tailored for BAAI/bge-reranker-v2-m3.
     """
-    def __init__(self, primary_url: str = None):
+    def __init__(self, api_url: str):
+        """
+        api_url: your rerank endpoint
+        """
+        self.api_url = api_url
         self.working_url = None
         
-        # 定義候選清單
-        candidates = []
-        if primary_url:
-            candidates.append(primary_url)
-            
+        # Fallback logic: Try api_url first, then others
+        candidates = [api_url]
         defaults = [
             "http://ollama-gateway:11434/rerank",
-            "http://ollama:11434/rerank",
             "http://localhost:11434/rerank",
             "http://127.0.0.1:11434/rerank"
         ]
-        
         for url in defaults:
             if url not in candidates:
                 candidates.append(url)
-                
-        # 尋找可用的 Host
-        self.working_url = self._find_working_url(candidates)
         
-        if not self.working_url and primary_url:
-             # 如果檢查都失敗，還是設為主要 URL 以便讓它在 runtime 報錯而不是 init 就掛
-            self.working_url = primary_url
+        self.working_url = self._find_working_url(candidates)
+        if not self.working_url:
+            # If all fail, default to the provided api_url (so it fails at runtime with a clear error)
+            self.working_url = api_url
 
     def _find_working_url(self, candidates):
         for url in candidates:
@@ -64,14 +61,22 @@ class RemoteFlagReranker:
         print("[Reranker] Warning: No reachable remote API found during init.")
         return None
 
+    @staticmethod
+    def check_connectivity(api_url: str) -> bool:
+        try:
+            payload = {"pairs": [{"text1": "test", "text2": "test"}]}
+            resp = requests.post(api_url, json=payload, timeout=3)
+            return resp.status_code == 200
+        except Exception:
+            return False
+
     def compute_score(self, pairs, max_length=1024):
+        """
+        pairs: list of [text1, text2], same as the official compute_score
+        return: score of each pair in np.ndarray, same as the official compute_score
+        """
         if not self.working_url:
-            # 嘗試重新尋找 (以防服務稍後才啟動)
-            print("[Reranker] Retry finding remote API...")
-            self.__init__()
-            if not self.working_url:
-                 # 真的沒救了
-                 return np.array([0.0] * len(pairs))
+             return np.array([0.0] * len(pairs))
 
         # Strict Limit: Each API call supports at most 32 pairs.
         batch_size = 32
@@ -88,7 +93,7 @@ class RemoteFlagReranker:
                     all_scores.extend([0.0] * len(batch))
                     continue
                     
-                scores = resp.json().get("scores", [])
+                scores = resp.json()["scores"]
                 all_scores.extend(scores)
             except Exception as e:
                 print(f"Error calling Remote Reranker at {self.working_url}: {e}")
@@ -98,17 +103,6 @@ class RemoteFlagReranker:
 
     def predict(self, pairs):
         return self.compute_score(pairs)
-    
-    @staticmethod
-    def check_connectivity(api_url: str) -> bool:
-        """Probe the API to see if it's reachable."""
-        try:
-            # Send a dummy pair to check connection
-            payload = {"pairs": [{"text1": "test", "text2": "test"}]}
-            resp = requests.post(api_url, json=payload, timeout=3)
-            return resp.status_code == 200
-        except Exception:
-            return False
 
 class HybridRetriever:
     def __init__(
@@ -154,7 +148,10 @@ class HybridRetriever:
         if SentenceTransformer:
             try:
                 print(f"[Retriever] Attempting to load {embedding_model_name} from local cache...")
-                self.dense_encoder = SentenceTransformer(embedding_model_name, local_files_only=True)
+                # Use absolute path to avoid network checks in strict offline mode
+                model_path = "/home/lixiang/.cache/huggingface/hub/models--sentence-transformers--all-MiniLM-L6-v2/snapshots/c9745ed1d9f207416be6d2e6f8de32d1f16199bf"
+                print(f"[Retriever] Loading model from {model_path}...")
+                self.dense_encoder = SentenceTransformer(model_path, local_files_only=True)
                 print(f"[Retriever] Successfully loaded {embedding_model_name}.")
                 
                 # 預計算所有 chunks 的向量
@@ -187,17 +184,23 @@ class HybridRetriever:
             elif reranker_type == "local":
                 use_remote = False
             else: # auto
-                # Probe Remote API
-                if RemoteFlagReranker.check_connectivity(remote_url):
-                    print(f"[Reranker] Remote API detected at {remote_url}. Using Remote (Safer for Submission Env).")
+                # Use RemoteFlagReranker's internal logic to find a working URL
+                # We instantiate it with the preferred URL, and it will fallback to others if needed.
+                temp_reranker = RemoteFlagReranker(remote_url)
+                if temp_reranker.working_url:
+                    print(f"[Reranker] Remote API detected at {temp_reranker.working_url}. Using Remote.")
                     use_remote = True
+                    # We can reuse this instance or let the logic below re-instantiate it (cleaner to re-instantiate or assign)
+                    # To keep logic simple below:
+                    self.reranker = temp_reranker
                 else:
-                    print(f"[Reranker] Remote API unreachable at {remote_url}.")
+                    print(f"[Reranker] Remote API unreachable.")
                     print(f"[Reranker] Auto mode: Disabling Reranker (use RERANKER_TYPE=local to force local load).")
-                    use_remote = None  # 特殊標記：不用 Remote 也不用 Local
-            
+                    use_remote = None 
+
             if use_remote is True:
-                self.reranker = RemoteFlagReranker(remote_url)
+                if self.reranker is None: # If not already created in auto block
+                    self.reranker = RemoteFlagReranker(remote_url)
             elif use_remote is False:  # 明確要求 local
                 print(f"[Reranker] Using Local GPU: {rerank_model_name}")
                 # 嘗試載入 Local，可能會失敗（沒模型或沒網）
