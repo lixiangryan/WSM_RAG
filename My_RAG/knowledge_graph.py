@@ -2,6 +2,8 @@ import json
 import os
 import re
 import jieba.posseg as pseg
+import math
+from nltk.stem import PorterStemmer
 from collections import defaultdict
 from typing import List, Dict, Set, Any, Optional
 
@@ -15,6 +17,9 @@ class SimpleKnowledgeGraph:
     def __init__(self, chunks: List[Dict[str, Any]], index_path: Optional[str] = None):
         self.chunks = chunks
         self.entity_map = defaultdict(set) # Entity -> Set[ChunkIndex]
+        self.doc_freqs = defaultdict(int)  # Entity -> Document Frequency (DF)
+        self.total_docs = len(chunks)
+        self.stemmer = PorterStemmer()
         
         # Try to load pre-computed index if path is provided and exists
         index_loaded = False
@@ -28,13 +33,18 @@ class SimpleKnowledgeGraph:
             self._build_graph()
 
     def save(self, path: str):
-        """Saves the entity_map to a JSON file."""
+        """Saves the entity_map and doc_freqs to a JSON file."""
         # Convert sets to lists for JSON serialization
-        serializable_map = {k: list(v) for k, v in self.entity_map.items()}
+        data = {
+            "version": "2.0",
+            "total_docs": self.total_docs,
+            "entity_map": {k: list(v) for k, v in self.entity_map.items()},
+            "doc_freqs": self.doc_freqs
+        }
         try:
             with open(path, 'w', encoding='utf-8') as f:
-                json.dump(serializable_map, f, ensure_ascii=False)
-            print(f"[KG] Index saved to {path}")
+                json.dump(data, f, ensure_ascii=False)
+            print(f"[KG] Index (v2.0) saved to {path}")
         except Exception as e:
             print(f"[KG] Error saving index: {e}")
 
@@ -42,7 +52,14 @@ class SimpleKnowledgeGraph:
         """Loads the entity_map from a JSON file. Returns True if successful and valid."""
         try:
             with open(path, 'r', encoding='utf-8') as f:
-                loaded_map = json.load(f)
+                data = json.load(f)
+            
+            # Check Version
+            if data.get("version") != "2.0":
+                print("[KG] Index version mismatch (expected 2.0). Rebuilding...")
+                return False
+
+            loaded_map = data["entity_map"]
             
             # Convert lists back to sets and Validate
             temp_map = defaultdict(set)
@@ -63,6 +80,9 @@ class SimpleKnowledgeGraph:
                 return False
                 
             self.entity_map = temp_map
+            self.doc_freqs = defaultdict(int, data.get("doc_freqs", {}))
+            self.total_docs = data.get("total_docs", len(self.chunks))
+            
             print(f"[KG] Successfully loaded {len(self.entity_map)} entities. Index is valid.")
             return True
             
@@ -150,8 +170,9 @@ class SimpleKnowledgeGraph:
             t_lower = t.lower()
             # Filter distinct terms (length > 2) and skip stopwords
             if len(t) > 2 and t_lower not in stopwords and not t.isdigit():
-                 # Always store as lowercase key for matching
-                entities.add(f"Term:{t_lower}")
+                 # Stemming for English terms to improve recall (e.g. "investing" -> "invest")
+                 stemmed_t = self.stemmer.stem(t_lower)
+                 entities.add(f"Term:{stemmed_t}")
 
         return entities
 
@@ -163,6 +184,7 @@ class SimpleKnowledgeGraph:
             entities = self._extract_entities(text, is_query=False)
             for ent in entities:
                 self.entity_map[ent].add(i)
+                self.doc_freqs[ent] += 1
 
     def search(self, query: str) -> Dict[int, float]:
         """
@@ -180,15 +202,20 @@ class SimpleKnowledgeGraph:
                 # If we had a deeper graph, we could do Entity -> Related Entity -> Chunks
                 related_chunk_indices = self.entity_map[ent]
                 
-                # Weighting Refinement:
-                # Terms (Entities like 'TSMC') are much more discriminatory than Years (like '2023').
-                # If we weight Year > Term, we get lots of noise (documents matching only the year).
-                # Fix: Term = 5.0, Year = 1.0
-                weight = 5.0 
+                # Weighting Refinement with IDF:
+                # Base Weight: Term = 5.0, Year = 1.0
+                base_weight = 5.0 
                 if ent.startswith("Year:"):
-                    weight = 1.0 
+                    base_weight = 1.0 
                 
+                # IDF Calculation: log(N / (df + 1)) + 1
+                # Penalize very frequent terms, boost rare ones.
+                df = self.doc_freqs.get(ent, 0)
+                idf = math.log(1 + (self.total_docs / (df + 1)))
+                
+                final_weight = base_weight * idf
+
                 for idx in related_chunk_indices:
-                    scores[idx] += weight
+                    scores[idx] += final_weight
                     
         return scores
