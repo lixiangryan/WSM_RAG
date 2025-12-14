@@ -33,9 +33,6 @@ echo "Pulling gemma:2b model (this will only happen if it's missing)..."
 ollama pull gemma:2b
 ollama pull granite4:3b
 
-ollama pull embeddinggemma
-ollama pull nomic-embed-text
-
 echo "Model pull complete. Server is running and listening on 0.0.0.0"
 
 # 5. 讓 container 保持存活 (等待背景的伺服器)

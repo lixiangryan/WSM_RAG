@@ -22,7 +22,7 @@ class RAGConfig:
         },
         "en": {
             "vector_model": "nomic-embed-text",   # 英文模型
-            "bm25_tokenizer": "space",
+            "bm25_tokenizer": "regex",
             "weights": {"bm25": 0.5, "vec": 0.5}, 
         }
     }
@@ -46,11 +46,21 @@ class SparseRetriever:
         self.corpus = [chunk["page_content"] for chunk in chunks]
         self.language = language
         self.tokenizer_type = RAGConfig.get(language, "bm25_tokenizer")
+
+        self.en_tokenizer_re = re.compile(r'\b\w+\b|[^\w\s]')
         
         # 建立索引
         if self.tokenizer_type == "jieba":
             self.tokenized_corpus = [list(jieba.cut(doc)) for doc in self.corpus]
+        # [修改] 處理 "regex" 分詞
+        elif self.tokenizer_type == "regex":
+            self.tokenized_corpus = []
+            for doc in self.corpus:
+                # 使用正規表達式切分，並全部轉為小寫
+                tokens = [t.lower() for t in self.en_tokenizer_re.findall(doc)]
+                self.tokenized_corpus.append(tokens)
         else:
+            # 兼容舊的 "space" 邏輯 (作為 fallback)
             self.tokenized_corpus = [doc.lower().split(" ") for doc in self.corpus]
             
         self.bm25 = BM25Okapi(self.tokenized_corpus)
@@ -58,6 +68,9 @@ class SparseRetriever:
     def search(self, query, top_k=50) -> Dict[int, float]:
         if self.tokenizer_type == "jieba":
             tokenized_query = list(jieba.cut(query))
+        # [修改] 處理 "regex" 分詞
+        elif self.tokenizer_type == "regex":
+            tokenized_query = [t.lower() for t in self.en_tokenizer_re.findall(query)]
         else:
             tokenized_query = query.lower().split(" ")
             
