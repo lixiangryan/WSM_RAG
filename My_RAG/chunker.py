@@ -6,9 +6,11 @@ from typing import List, Dict, Any, Optional
 MAX_CHUNK_SIZE = 12
 
 class Chunker:
-    def __init__(self, model_name="BAAI/bge-m3", threshold=0.5):
+    def __init__(self, model_name="BAAI/bge-m3", threshold=0.5, ollama_client=None):
         self.model = None
         self.threshold = threshold
+        self.ollama_client = ollama_client
+        self.use_ollama = False
         
         try:
             print(f"[Chunker] Attempting to load {model_name} from local cache...")
@@ -19,8 +21,12 @@ class Chunker:
             print(f"[Chunker] Successfully loaded {model_name}.")
         except Exception as e:
             print(f"[Chunker] ERROR: Local cache for {model_name} not found. ")
-            print(f"[Chunker] STRICT OFFLINE MODE: Skipping online download to protect submission env.")
-            print(f"[Chunker] Semantic Chunking disabled. Falling back to Basic Sliding Window.")
+            if self.ollama_client:
+                print(f"[Chunker] Fallback: Using Ollama Gateway for embeddings.")
+                self.use_ollama = True
+            else:
+                print(f"[Chunker] STRICT OFFLINE MODE: Skipping online download to protect submission env.")
+                print(f"[Chunker] Semantic Chunking disabled. Falling back to Basic Sliding Window.")
             self.model = None
 
     def spilt_txt_into_sentences(self, text, chunk_size=500, chunk_overlap=50):
@@ -32,7 +38,7 @@ class Chunker:
         all_chunks = []
         
         # === Fallback Logic ===
-        if self.model is None:
+        if self.model is None and not self.use_ollama:
             # 使用 Basic Sliding Window 切分 (原始邏輯)
             print("[Chunker] Running Basic Sliding Window Chunking (Fallback)...")
             chunk_size = 1000
@@ -58,7 +64,14 @@ class Chunker:
         
         # === Semantic Chunking Logic ===
         print("開始進行語意切分 (Semantic Chunking)...")
-        # 這裡會下載或載入 BAAI/bge-m3，需確保有網路或已預下載
+        
+        # Determine Ollama model if using fallback
+        ollama_model = "embeddinggemma:300m" # Default for English (User specified)
+        if language == "zh":
+             ollama_model = "qwen3-embedding:0.6b" # Default for Chinese (User specified)
+        
+        if self.use_ollama:
+             print(f"[Chunker] Using Ollama model: {ollama_model}")
         
         for doc in tqdm(docs, desc="Processing Documents"):
             content = doc.get("content", "")
@@ -73,7 +86,20 @@ class Chunker:
                 continue
 
             # 把句子轉成向量 (Semantic Embedding)
-            embeddings = self.model.encode(sentences, convert_to_tensor=True)
+            if self.use_ollama:
+                try:
+                    # Ollama embed API returns {'embeddings': [[...], [...]]}
+                    resp = self.ollama_client.embed(model=ollama_model, input=sentences)
+                    embeddings = util.cos_sim(resp['embeddings'], resp['embeddings']) # Self-similarity matrix? No, we need raw embeddings
+                    # Wait, util.cos_sim expects tensors or ndarrays.
+                    # Let's convert to tensor for compatibility with existing logic
+                    import torch
+                    embeddings = torch.tensor(resp['embeddings'])
+                except Exception as e:
+                    print(f"[Chunker] Ollama embedding failed: {e}. Skipping doc.")
+                    continue
+            else:
+                embeddings = self.model.encode(sentences, convert_to_tensor=True)
             current_chunk = [sentences[0]]
 
             for i in range(len(sentences) - 1):
@@ -112,11 +138,12 @@ def chunk_documents(
     language: Optional[str] = None,
     chunk_size: int = 1000,    # Unused in Semantic Chunking generally, but kept for interface
     chunk_overlap: int = 300,  # Unused
+    ollama_client: Optional[Any] = None
 ) -> List[Dict[str, Any]]:
     """
     使用基於 BAAI/bge-m3 的語意切分 (Semantic Chunking)。
     這會取代原本基於規則的切分。
     """
     # 初始化 Chunker (會載入模型)
-    chunker = Chunker(model_name="BAAI/bge-m3", threshold=0.5)
+    chunker = Chunker(model_name="BAAI/bge-m3", threshold=0.5, ollama_client=ollama_client)
     return chunker.chunk_documents(docs, language)

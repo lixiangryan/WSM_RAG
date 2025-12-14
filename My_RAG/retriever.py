@@ -19,11 +19,7 @@ except ImportError:
     SentenceTransformer = None
     CrossEncoder = None
 
-class RemoteFlagReranker:
-    """
-    Fake FlagReranker class: same interface as the official one (FlagEmbedding),
-    but internally calls a remote API. Adapts to CrossEncoder interface via predict().
-    """
+
 class RemoteFlagReranker:
     """
     Fake FlagReranker class with Failover support:
@@ -104,6 +100,7 @@ class RemoteFlagReranker:
     def predict(self, pairs):
         return self.compute_score(pairs)
 
+
 class HybridRetriever:
     def __init__(
         self,
@@ -113,7 +110,7 @@ class HybridRetriever:
         embed_top_k: int = 50,     # 向量取前 50
         final_top_k: int = 5,      # 最終回傳前 5
         # rerank_model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2", # 推薦的輕量級 Reranker
-        rerank_model_name: str = "BAAI/bge-reranker-base", # 將預設模型換成支援中英雙語的 BAAI/bge-reranker-base
+        rerank_model_name: str = "BAAI/bge-reranker-v2-m3", # 將預設模型換成支援中英雙語的 BAAI/bge-reranker-v2-m3
         embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
         use_reranker: bool = True,
         index_path: Optional[str] = None
@@ -241,10 +238,10 @@ class HybridRetriever:
     def _tokenize(self, text: str):
         if self.language == "zh":
             return list(jieba.cut(text))
-        # English: Split + Lowercase + Stemming
-        # 這是 lixiang1202_optimize-rag-performance(1208)_part2 的優化：
-        # 將單字還原回詞幹 (e.g., "paying", "pays" -> "pay")，增加檢索召回率
-        tokens = text.split()
+        # English: Regex Split + Lowercase + Stemming
+        # [Optimization from wang(12140848)]
+        # Use Regex to correctly handle punctuation and compound words
+        tokens = re.findall(r'\b\w+\b|[^\w\s]', text)
         return [self.stemmer.stem(t.lower()) for t in tokens]
 
     def _focus_terms(self, query):
@@ -445,7 +442,6 @@ class HybridRetriever:
 
         return [self.chunks[idx] for idx in final_indices]
 
-# 使用範例
 # 使用範例
 def create_retriever(chunks, language="en", index_path=None):
     return HybridRetriever(chunks, language=language, index_path=index_path)

@@ -62,3 +62,29 @@
         *   如果一個實體很稀有，權重會提升。
     *   **公式：** $FinalWeight = BaseWeight \times IDF$
     *   這讓系統能自動判斷哪些實體才是該查詢中「真正獨特」的關鍵字。
+
+## 第五階段：上下文擴展 (Contextual Expansion) - Pseudo-Relevance Feedback (PRF)
+**目標：** 模擬「聯想」能力，從初步檢索結果中挖掘潛在的關鍵字，以捕捉隱含的語意關聯。
+
+*   **機制 (Pseudo-Relevance Feedback)：**
+    1.  **初步檢索 (Initial Search)：** 使用原始查詢實體進行第一輪 KG 檢索。
+    2.  **挖掘 (Mining)：** 分析排名最高的 N 個文件區塊 (Top-N Chunks)，找出其中最常共同出現的實體。
+    3.  **擴展 (Expansion)：** 將這些「關聯實體」加入查詢中，但給予較低的權重 (例如 0.5x)。
+    4.  **重排序 (Re-ranking)：** 結合原始實體與擴展實體進行最終評分。
+*   **優勢：**
+    *   不需要外部同義詞庫 (Thesaurus) 或大型模型。
+    *   能動態適應該領域的特有詞彙關聯 (例如發現 "TSMC" 常與 "Wafer" 共現，即使查詢沒寫 Wafer 也能抓到)。
+    *   **代價：** 需儲存 `Chunk -> Entities` 的正向索引 (Forward Index)，稍微增加記憶體與儲存空間。
+
+## 第六階段：全域實體整合 (Global Entity Consolidation) - 同義詞解析 (Synonym Resolution)
+**目標：** 解決多語言與縮寫導致的實體破碎問題 (e.g., "TSMC" vs "Taiwan Semiconductor" vs "台積電")，將不同稱呼統一為同一語意概念。
+
+*   **機制：**
+    1.  **離線聚類 (Offline Clustering)：** 在建置索引後，統計高頻實體。
+    2.  **LLM 判別：** 使用 LLM 找出這些高頻實體之間的同義關係，生成 `synonym_map.json` (e.g., `{"台積電": "TSMC", "Taiwan Semiconductor": "TSMC"}`).
+    3.  **查詢擴展 (Query Expansion)：**
+        *   當使用者查詢 "台積電" 時，系統查表發現標準名是 "TSMC"。
+        *   系統自動將 "TSMC" 加入查詢條件，確保能搜到只寫了英文名稱的文件。
+*   **優勢：**
+    *   **跨語言檢索：** 完美解決中英夾雜的財報檢索問題。
+    *   **縮寫還原：** 自動連結全名與縮寫。

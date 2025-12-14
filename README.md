@@ -421,6 +421,30 @@ docker-compose up --build
     *   Prompt: *"You are a relevance judge... Rate the relevance from 0 to 10."*
     *   **效益：** 這是最終極的過濾手段。即使文件通過了 BM25、Vector 和 Cross-Encoder 的篩選，如果 LLM 讀了覺得「文不對題」，它仍會被降權。這能有效提升最終送給 Generator 的 Top-5 品質。
 
+### uuuu_1211_sentencesTransformer(12131605)
+**目標：** 引入語意切分 (Semantic Chunking) 以提升文件切分的連貫性。
+
+**改動內容：**
+1.  **Semantic Chunking (`My_RAG/chunker.py`)**:
+    *   引入 `BAAI/bge-m3` 模型。
+    *   不再使用固定的字元長度切分，而是計算句子間的 Embedding 相似度 (Threshold=0.5)。
+    *   將語意連貫的句子合併為一個 Chunk，提升檢索精準度。
+
+### wang & esdese(12131623)
+**評估結果：** 經評估 wang 與 esdese 分支，確認目前 lixiang 分支功能已涵蓋並超越其內容。
+**決策：** **略過合併**。
+
+### wang(12140848)
+**目標：** 優化英文分詞邏輯，提升 BM25 在處理標點符號與複合詞時的精準度。
+
+**改動內容：**
+1.  **Regex Tokenization (`My_RAG/retriever.py`)**:
+    *   棄用簡單的 `text.split()` (僅依賴空白切分)。
+    *   改用 `re.findall(r'\b\w+\b|[^\w\s]', text)`。
+    *   **效益：**
+        *   正確分離標點符號 (e.g., "end." -> "end", ".")，避免標點沾黏導致詞彙無法匹配。
+        *   保留了 `wang` 分支在處理英文文本時的細膩度，同時結合了 `lixiang` 分支的 Stemming 優勢。
+
 ### lixiang1202_optimize-rag-performance(12142004）
 **目標：** 針對 Knowledge Graph 進行深度優化，解決「詞形變化」導致的漏失與「高頻實體」權重過高的問題。
 
@@ -434,7 +458,49 @@ docker-compose up --build
     *   公式：`Weight = BaseWeight * log(1 + TotalDocs / (DocFreq + 1))`
     *   **效益：** 自動降權那些「到處都出現」的泛用實體 (如大型公司的名字)，並提升稀有實體 (如特定專案代號) 的重要性，讓檢索更具鑑別力。
 
-## Change Log
+### lixiang1202_optimize-rag-performance(12142114）
+**目標：** 增強系統在無本地模型環境下的強韌性 (Robustness)，並修正 Reranker 的 API 呼叫限制。
+
+**改動內容：**
+1.  **Chunker Fallback 機制 (`My_RAG/chunker.py`)**:
+    *   **問題：** 當本地 `BAAI/bge-m3` 模型缺失時，系統會降級為基本的滑動視窗切分，導致檢索品質下降。
+    *   **修復：** 新增 Fallback 邏輯，當本地模型載入失敗時，自動切換至 Gateway (Ollama) 請求 Embedding。
+    *   **模型選擇：**
+        *   英文：`embeddinggemma:300m`
+        *   中文：`qwen3-embedding:0.6b`
+2.  **Reranker Batching & API Fix (`My_RAG/retriever.py`)**:
+    *   **問題：** 直接將大量 Pairs 傳送給 Reranker API 會導致 Timeout 或超過 Payload 限制。
+    *   **修復：** 實作 `batch_size = 32` 的分批處理邏輯，確保 API 呼叫穩定。
+    *   **修正：** 修復了 `RemoteFlagReranker` 類別中的重複定義與語法錯誤。
+3.  **Pipeline Optimization (`My_RAG/main.py`)**:
+    *   調整初始化順序，確保 Ollama Client 在 Chunker 初始化前就已建立，以便傳遞給 Chunker 進行 Fallback。
+
+### lixiang1202_optimize-rag-performance(12142120）
+**目標：** 透過上下文擴展 (Contextual Expansion) 提升 Knowledge Graph 的語意召回率，捕捉隱含關聯。
+
+**改動內容：**
+1.  **KG Phase 5: Pseudo-Relevance Feedback (PRF) (`My_RAG/knowledge_graph.py`)**:
+    *   **機制：** 實作了 **正向索引 (Forward Index)** (`chunk_map`) 與 **動態擴展** 邏輯。
+    *   **流程：**
+        1.  **Initial Search**：使用原始查詢實體進行初步檢索。
+        2.  **Mining**：分析 Top-3 相關區塊，挖掘其中最常共同出現的實體 (Co-occurring Entities)。
+        3.  **Expansion**：將這些關聯實體以 **0.5x 權重** 加入查詢。
+        4.  **Re-ranking**：結合原始實體與擴展實體進行最終評分。
+    *   **效果：** 能自動發現同義詞或高度相關的術語 (例如 "TSMC" -> "Wafer", "Revenue")，無需外部字典。
+
+### lixiang1202_optimize-rag-performance(12142145）
+**目標：** 解決多語言與縮寫導致的實體破碎問題，將不同稱呼統一為同一語意概念 (Synonym Resolution)。
+
+**改動內容：**
+1.  **KG Phase 6: Global Entity Consolidation (`My_RAG/knowledge_graph.py`)**:
+    *   **機制：** 實作 **同義詞解析 (Synonym Resolution)**。
+    *   **流程：**
+        1.  **Offline Clustering**：使用 `scripts/build_synonyms.py` 呼叫 LLM，對高頻實體進行聚類分析。
+        2.  **Synonym Map**：生成 `synonym_map.json` (e.g., `{"台積電": "TSMC"}`).
+        3.  **Query Expansion**：查詢時自動將同義詞轉換為標準詞 (Canonical Term) 並加入檢索條件。
+    *   **效果：** 完美解決中英夾雜與縮寫問題 (e.g., 查 "台積電" 也能搜到 "TSMC" 的文件)。
+
+## Change Log from 1210
 - **lixiang1202_optimize-rag-performance(1210)_part2_Pre-computed-KG**:
     - 實作「小抄戰略 (Cheat Sheet Strategy)」：預先計算 Knowledge Graph 並存為 `kg_index.json` 以便快速載入。
     - 新增 `scripts/build_kg_index.py` 用於離線生成索引 (支援 Pandas + Regex + LLM 增強)。
@@ -454,12 +520,27 @@ docker-compose up --build
 
 - **lixiang1202_optimize-rag-performance(1211)_part2**:
     - **LLM Scoring**: 實作 `_llm_cross_check`，讓 `granite4:3b` 對 Top-60 文件進行 0-10 分的相關性評分 (Pointwise)，作為最終排序依據。 (RTX 5090 Ultra Mode)
-- **lixiang1202_optimize-rag-performance(12142004）**:
-    - **KG Optimization**: 實作 **Stemming** (詞幹還原) 與 **IDF Weighting** (動態權重)，提升 Knowledge Graph 的召回率與鑑別力。
+
 - **uuuu_1211_sentencesTransformer(12131605)**:
     - **Semantic Chunking**: 引入 `BAAI/bge-m3` 模型進行語意切分 (Semantic Chunking)。不再使用固定的字元長度切分，而是計算句子間的 Embedding 相似度 (Threshold=0.5)，將語意連貫的句子合併為一個 Chunk，提升檢索精準度。
-- **wang & esdese (2025-12-13 16:23)**:
+
+- **wang & esdese(12131623)**:
     - 評估 wang 與 esdese 分支後，確認目前 lixiang 分支功能已涵蓋並超越其內容，故略過合併。
+
+- **wang(12140848)**:
+    - **Tokenizer Optimization**: 引入 Regex Tokenization，優化英文分詞與標點符號處理。
+
+- **lixiang1202_optimize-rag-performance(12142004）**:
+    - **KG Optimization**: 實作 **Stemming** (詞幹還原) 與 **IDF Weighting** (動態權重)，提升 Knowledge Graph 的召回率與鑑別力。
+
+- **lixiang1202_optimize-rag-performance(12142114）**:
+    - **Robustness Fixes**: 實作 Chunker Fallback (Ollama Gateway) 與 Reranker Batching (Size=32)，解決無本地模型與 API 限制問題。
+
+- **lixiang1202_optimize-rag-performance(12142120）**:
+    - **KG Phase 5**: 實作 **Contextual Expansion (PRF)**，透過挖掘 Top-N 文件的共現實體自動擴展查詢，提升隱含語意召回率。
+
+- **lixiang1202_optimize-rag-performance(12142145）**:
+    - **KG Phase 6**: 實作 **Synonym Resolution**，利用 LLM 離線聚類生成同義詞表，解決中英夾雜與縮寫檢索問題。
 
 ## 🚀 未來工作 (Future Work)
 

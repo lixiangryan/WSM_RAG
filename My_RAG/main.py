@@ -80,9 +80,6 @@ def main(query_path, docs_path, language, output_path):
     docs_for_chunking = load_jsonl(docs_path)
     queries = load_jsonl(query_path)
     
-    print("Chunking documents...")
-    chunks = chunk_documents(docs_for_chunking, language)
-    
     print("Connecting to Ollama...")
     hosts_to_try = ["http://ollama-gateway:11434", "http://ollama:11434", "http://localhost:11434"]
     ollama_client = None
@@ -98,6 +95,10 @@ def main(query_path, docs_path, language, output_path):
     if ollama_client is None:
         raise ConnectionError("Failed to connect to any Ollama host.")
 
+    print("Chunking documents...")
+    # Pass ollama_client to chunker for fallback
+    chunks = chunk_documents(docs_for_chunking, language, ollama_client=ollama_client)
+    
     print("Creating retriever...")
     index_filename = f"kg_index_{language}.json" if language else "kg_index.json"
     retriever = create_retriever(chunks, language, index_path=index_filename)
