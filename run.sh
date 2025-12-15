@@ -3,7 +3,15 @@
 set -e
 pip install -r requirements.txt
 python ./My_RAG/download_model.py
-
+if ! pgrep -x "ollama" > /dev/null
+then
+    echo "Starting Ollama..."
+    ollama serve &
+    sleep 5
+    ollama pull qwen2.5:3b
+else
+    echo "Ollama is already running."
+fi
 log() {
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     local message="$timestamp - $1"
