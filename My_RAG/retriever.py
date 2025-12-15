@@ -7,6 +7,7 @@ from rank_bm25 import BM25Okapi
 import ollama
 import math
 import requests
+from knowledge_graph import SimpleKnowledgeGraph
 
 # ==========================================
 # 0. 環境感知配置 (Environment Config)
@@ -188,7 +189,7 @@ class HybridReranker:
 # ==========================================
 
 class EnsembleRetriever:
-    def __init__(self, chunks, language, client):
+    def __init__(self, chunks, language, client, index_path: Optional[str] = None):
         self.chunks = chunks
         self.language = language
         self.weights = RAGConfig.get(language, "weights")
@@ -198,6 +199,14 @@ class EnsembleRetriever:
         
         # 使用 HybridReranker 替代原本的 RemoteFlagReranker
         self.reranker = HybridReranker(api_url=RERANK_API_URL)
+
+        # 初始化 Knowledge Graph (Bonus Signal) [Phase 8]
+        self.kg = None
+        if index_path and os.path.exists(index_path):
+            print(f"[KG] Loading Knowledge Graph from {index_path}...")
+            self.kg = SimpleKnowledgeGraph(self.chunks, index_path)
+        else:
+            print(f"[KG] No index path provided or file not found. KG disabled.")
 
     def _normalize(self, results: Dict[int, float]) -> Dict[int, float]:
         if not results: return {}
@@ -214,17 +223,32 @@ class EnsembleRetriever:
         
         bm25_norm = self._normalize(bm25_res)
         vec_norm = self._normalize(vec_res)
+        
+        # 3. Knowledge Graph Retrieval (Bonus Signal)
+        kg_res = {}
+        if self.kg:
+            kg_res = self.kg.search(query, use_prf=True) # Enable Global Expansion
+            kg_norm = self._normalize(kg_res)
+        else:
+            kg_norm = {}
 
         # 2. 融合
-        all_indices = set(bm25_norm.keys()) | set(vec_norm.keys())
+        all_indices = set(bm25_norm.keys()) | set(vec_norm.keys()) | set(kg_norm.keys())
         merged_results = []
         alpha, beta = self.weights["vec"], self.weights["bm25"]
 
         for idx in all_indices:
             s_bm25 = bm25_norm.get(idx, 0.0)
             s_vec = vec_norm.get(idx, 0.0)
+            s_kg = kg_norm.get(idx, 0.0)
+            
             fusion_score = (beta * s_bm25) + (alpha * s_vec)
+            
             if s_bm25 > 0 and s_vec > 0: fusion_score *= 1.1 # Hybrid Bonus
+            
+            # KG Bonus Signal
+            if s_kg > 0:
+                 fusion_score += 0.1 * s_kg
             
             merged_results.append({
                 "index": idx, 
@@ -250,6 +274,6 @@ class EnsembleRetriever:
         merged_results.sort(key=lambda x: x["score"], reverse=True)
         return [item["chunk"] for item in merged_results[:top_k]]
 
-def create_retriever(chunks, language, client) -> EnsembleRetriever:
+def create_retriever(chunks, language, client, index_path: Optional[str] = None) -> EnsembleRetriever:
     # 確保傳入的 client 也是指向正確的 host
-    return EnsembleRetriever(chunks, language, client)
+    return EnsembleRetriever(chunks, language, client, index_path)

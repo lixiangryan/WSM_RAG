@@ -143,7 +143,10 @@ def main(query_path, docs_path, language, output_path):
         raise ConnectionError("Failed to connect to any Ollama host.")
     # --- End Ollama Client Instantiation ---
 
-    retriever = create_retriever(chunks, language, ollama_client)
+    # Add KG Index Path (Phase 8 Implementation)
+    index_path = f"kg_index_{language}.json" if language in ["zh", "en"] else None
+    
+    retriever = create_retriever(chunks, language, ollama_client, index_path=index_path)
     print("Retriever created successfully.")
 
     for query in tqdm(queries, desc="Processing Queries"):

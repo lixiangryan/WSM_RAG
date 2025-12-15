@@ -96,3 +96,21 @@ You can freely adjust `config_local.yaml` during development for convenience, wh
 pip install -r requirements.txt
 ./run.sh
 ```
+## Optimization & Change Log
+
+### Phase 8: Global Entity Co-occurrence Graph (v3.0)
+
+**Integrated from branch `lixiang1202_optimize-rag-performance`**
+
+We have integrated a **Global Knowledge Graph (v3.0)** to enhance retrieval precision and recall using entity co-occurrence statistics.
+
+**Key Features:**
+1.  **Global Co-occurrence Graph:** Pre-computed entity relationships based on the entire corpus (saved in `kg_index_en.json` and `kg_index_zh.json`).
+2.  **Autonomous Query Expansion:** Instead of relying on potentially unstable runtime pseudo-relevance feedback, we use the global graph to Expand queries with statistically significant co-occurring terms (e.g., "TSMC" -> "Wafer", "Revenue").
+3.  **Bonus Signal Fusion:** The KG score is fused into the retrieval pipeline in `My_RAG/retriever.py` as a weighted bonus signal, improving ranking for entity-centric queries without disrupting the baseline performance.
+
+**Files Added/Modified:**
+- `My_RAG/knowledge_graph.py`: KG implementation (v3.0).
+- `kg_index_en.json`, `kg_index_zh.json`: Pre-computed KG indexes.
+- `My_RAG/retriever.py`: Patched to include `SimpleKnowledgeGraph` integration.
+- `My_RAG/main.py`: Patched to pass `index_path` to retriever.
