@@ -1,12 +1,15 @@
-from ollama import Client
-from pathlib import Path
 import yaml
+import re
+from pathlib import Path
+from ollama import Client
 
-_OLLAMA_CLIENT = None
-_OLLAMA_CLIENT_INITIALIZED = False
+# ==========================================
+# 1. Config & Connection Helpers
+# ==========================================
 
 
 def load_ollama_config() -> dict:
+    """讀取設定檔，決定使用哪個模型"""
     configs_folder = Path(__file__).parent.parent / "configs"
     config_paths = [
         configs_folder / "config_local.yaml",
@@ -20,271 +23,200 @@ def load_ollama_config() -> dict:
             config = raw.get("ollama", {})
             break
 
-    # 如果兩個檔都沒有，給一個本機預設值，方便你在自己電腦測試
+    # 預設值 (Fallback)
     if not config:
         config = {
             "host": "http://127.0.0.1:11434",
-            "model": "granite4:3b",
+            "model": "granite3-dense:8b",  # 建議換成你實際在跑的模型名稱
         }
 
-    # 至少要有 model，host 可以之後再補
+    # 確保有 model key
     if "model" not in config:
-        config["model"] = "granite4:3b"
+        config["model"] = "granite3-dense:8b"
 
     return config
 
 
-def get_ollama_client() -> Client:
+def get_fallback_client() -> Client:
     """
-    按照下面順序嘗試連線：
-    1. config 裡指定的 host（支援單一字串或 list）
-    2. 預設候選 host：
-       - http://ollama-gateway:11434
-       - http://ollama:11434
-       - http://localhost:11434
-       - http://127.0.0.1:11434
-
-    ✅ 第一次呼叫時才會真的去「掃 host」
-    ✅ 之後呼叫全部直接回傳同一個 client，不再重試
+    僅當 main.py 沒傳 client 進來時，才使用的備用連線方式。
     """
-    global _OLLAMA_CLIENT, _OLLAMA_CLIENT_INITIALIZED
-
-    # 如果已經初始化過，就直接用快取的 client（不再打任何 request）
-    if _OLLAMA_CLIENT_INITIALIZED:
-        return _OLLAMA_CLIENT
-
-    cfg = load_ollama_config()
-
-    candidate_hosts = []
-
-    # 1) config 中的 host（若 server 端有特別設定，會放在這裡）
-    if "host" in cfg and cfg["host"]:
-        if isinstance(cfg["host"], str):
-            candidate_hosts.append(cfg["host"])
-        elif isinstance(cfg["host"], (list, tuple)):
-            candidate_hosts.extend(cfg["host"])
-
-    # 2) 加上內建預設候選 host（避免重複）
-    default_hosts = [
+    hosts = [
         "http://ollama-gateway:11434",
         "http://ollama:11434",
         "http://localhost:11434",
         "http://127.0.0.1:11434",
     ]
-    for h in default_hosts:
-        if h not in candidate_hosts:
-            candidate_hosts.append(h)
-
-    last_error = None
-    for host in candidate_hosts:
+    for host in hosts:
         try:
             client = Client(host=host)
-            # 用 list() 當健康檢查，成功就視為這個 host 可用
             client.list()
-            print(f"[INFO] Connected to Ollama at {host}")
-
-            # 設定快取，只做一次
-            _OLLAMA_CLIENT = client
-            _OLLAMA_CLIENT_INITIALIZED = True
+            print(f"[Generator] Fallback connected to {host}")
             return client
+        except Exception:
+            continue
+    raise ConnectionError("Generator failed to connect to any Ollama host.")
 
-        except Exception as e:
-            print(f"[WARN] Failed to connect to Ollama at {host}. " f"Error: {e}")
-            last_error = e
 
-    # 掃完全部 host 都失敗，標記為已初始化，避免之後一直重試
-    _OLLAMA_CLIENT = None
-    _OLLAMA_CLIENT_INITIALIZED = True
-    raise ConnectionError(
-        f"Failed to connect to any Ollama host. Last error: {last_error}"
-    )
+# ==========================================
+# 2. Parsing Logic (關鍵：分離思考與答案)
+# ==========================================
 
 
 def is_contains_chinese(strs):
-    """檢查字串是否包含中文字元"""
     for _char in strs:
         if "\u4e00" <= _char <= "\u9fff":
             return True
     return False
 
 
-def _parse_model_output(response_text: str, language: str) -> str:
+def _parse_model_output(response_text: str) -> str:
     """
-    解析模型輸出，移除思考過程，只保留最終答案。
+    解析模型輸出，移除 <Thinking> 區塊，只保留最終答案。
+    支援的標籤： 'Final Answer:', '最終答案：', 'Answer:', '回答：'
     """
-    # 定義要捕捉的標籤
-    tags = [
+    text = response_text.strip()
+
+    # 定義分割關鍵字 (優先順序很重要)
+    split_markers = [
         "Final Answer:",
         "Final Answer",
+        "最终答案：",
+        "最终答案:",
+        "最终答案",  # 簡體
         "最終答案：",
         "最終答案:",
-        "最終答案",
+        "最終答案",  # 繁體
         "Answer:",
         "Answer",
         "回答：",
         "回答:",
         "回答",
-        "答案：",
-        "答案:",
-        "答案",
-        "答：",
-        "答:",
-        "答",
     ]
 
-    # 2. 第一階段：尋找並切割思考過程
-    content = response_text.strip()
-    for tag in tags:
-        if tag in content:
-            # 取 tag 之後的內容
-            content = content.split(tag)[-1].strip()
-            # 找到一個就跳出，避免重複切
-            return content
-    # 3. 第二階段：二次清洗 (處理 "最終答案：答案：" 這種連著出現的情況)
-    # 有時候模型切完後，開頭可能還殘留 "答案：" 或 "Answer:"
-    # 我們用正則表達式或簡單的迴圈來清理開頭的雜訊
-    prefixes_to_clean = ["答案：", "答案:", "Answer:", "Answer", ":", "："]
+    # 嘗試分割
+    for marker in split_markers:
+        if marker in text:
+            # 取最後一個出現的 marker 之後的內容 (避免思考過程中提到這些詞)
+            parts = text.split(marker)
+            if len(parts) > 1:
+                answer_part = parts[-1].strip()
+                # 進一步清理開頭的冒號或符號
+                if answer_part.startswith(":") or answer_part.startswith("："):
+                    answer_part = answer_part[1:].strip()
+                return answer_part
 
-    # 持續檢查開頭，直到乾淨為止
-    while True:
-        original_content = content
-        for prefix in prefixes_to_clean:
-            if content.startswith(prefix):
-                content = content[len(prefix) :].strip()
-        # 如果這一輪沒有變動，代表已經乾淨了
-        if content == original_content:
-            break
+    # 如果都沒找到 marker，嘗試用 Regex 移除 <think>...</think> 標籤 (DeepSeek 風格)
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
-    return content
+    return text
 
 
-def generate_answer(query, context_chunks):
-    # 1. 準備 Context
-    context = "\n\n".join([chunk["page_content"] for chunk in context_chunks])
+# ==========================================
+# 3. Generator Function (核心)
+# ==========================================
 
-    # 2. 準備 Prompt (加入 CoT 與格式要求)
+
+def generate_answer(query: str, context_chunks: list, client: Client = None) -> str:
+    """
+    Args:
+        query: 使用者問題
+        context_chunks: 檢索到的 chunks 列表
+        client: 由 main.py 傳入的 Ollama Client (必填，但保留 None 做 fallback)
+    """
+    # 1. 處理 Context
+    if not context_chunks:
+        return "I don't know" if not is_contains_chinese(query) else "我不知道"
+
+    context_text = "\n\n".join(
+        [
+            f"[Document {i+1}]: {chunk['page_content']}"
+            for i, chunk in enumerate(context_chunks)
+        ]
+    )
+
+    # 2. 構建 Prompt (加入 CoT 思維鏈)
+    # 這是提升準確度、減少幻覺的最強手段
     if is_contains_chinese(query):
-        # 【中文 Prompt：強調推論與格式】
         prompt = (
-            "你是一個嚴謹的問答助手。請僅根據提供的「參考內容」回答問題。\n"
-            "若參考內容中沒有答案，請直接說「我不知道」，不可編造。\n"
-            "嚴格比對公司名稱與年份，不要混淆不同公司／年份的數據\n"
-            "如果 context 提到股息或影響，務必寫出，不要遺漏\n\n"
-            "請嚴格遵守以下輸出格式：\n"
-            "思考過程：<請在此簡短分析參考內容與問題的關聯>\n"
-            "最終答案：<請在此給出最終的繁體中文回答，不超過三句話>\n\n"
-            f"參考內容 (Context):\n{context}\n\n"
-            f"使用者問題 (Question): {query}\n"
+            "你是一個專業的 RAG 助手。請嚴格根據下方的【參考文件】回答使用者的問題。\n"
+            "規則：\n"
+            "1. 若【參考文件】中沒有答案，請直接回答「我不知道」，不可編造。\n"
+            "2. 嚴格比對公司名稱、時間點（年份/月份）與事件。若年份不符，視為無效資訊。\n"
+            "3. 回答必須簡潔有力。\n"
+            "4. 請先在心中思考，然後輸出最終答案。\n\n"
+            "輸出格式：\n"
+            "思考過程：(簡述你的推論邏輯，檢查年份與公司名稱)\n"
+            "最終答案：(只輸出結論)\n\n"
+            f"【參考文件】：\n{context_text}\n\n"
+            f"【使用者問題】：{query}\n"
         )
     else:
-        # 【英文 Prompt：強調 Reasoning 與 Format】
         prompt = (
-            "You are a strict assistant. Answer the question based ONLY on the provided context.\n"
-            "If the answer is not in the context, say 'I don't know'. Do not hallucinate.\n"
-            "Verify company names and years exactly match the question; do not mix different entities.\n"
-            "If context mentions dividends or their impacts, include them and don't omit available facts.\n\n"
-            "Please follow this format strictly:\n"
-            "Thinking: <Briefly analyze the context and reasoning here>\n"
-            "Answer: <Provide the final concise answer here, max 3 sentences>\n\n"
-            f"Context:\n{context}\n\n"
+            "You are a strict RAG assistant. Answer the question based ONLY on the provided context.\n"
+            "Rules:\n"
+            "1. If the answer is not in the context, say 'I don't know'. Do not hallucinate.\n"
+            "2. Strictly verify company names, dates (year/month), and events. Mismatches are invalid.\n"
+            "3. Be concise.\n"
+            "4. Think step-by-step before answering.\n\n"
+            "Output Format:\n"
+            "Thinking: (Brief reasoning, verifying dates and entities)\n"
+            "Final Answer: (The conclusion only)\n\n"
+            f"Context:\n{context_text}\n\n"
             f"Question: {query}\n"
         )
 
+    # 3. 準備 Client 與 Model
     cfg = load_ollama_config()
-    model = cfg.get("model", "granite4:3b")
+    model = cfg.get("model", "granite4:3b")  # 注意：這裡預設值要看你實際跑什麼
 
+    if client is None:
+        try:
+            client = get_fallback_client()
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    # 4. 生成回答
     try:
-        client = get_ollama_client()
-        response = client.generate(model=model, prompt=prompt)
-        raw_output = response["response"]
+        response = client.generate(model=model, prompt=prompt, stream=False)
+        raw_output = response.get("response", "")
 
-        lang = "zh" if is_contains_chinese(query) else "en"
-        final_answer = _parse_model_output(raw_output, lang)
+        # 5. 解析回答 (去除思考過程)
+        final_answer = _parse_model_output(raw_output)
+
+        # 安全網：如果解析後為空，至少回傳原始輸出 (雖然可能會髒一點)
+        if not final_answer:
+            return raw_output
+
         return final_answer
 
     except Exception as e:
-        return f"Error generating answer: {e}"
-    # 3. 呼叫模型
-    # ollama_config = load_ollama_config()
-    # 優先使用 config 設定，若無則 fallback 到預設值
-    # host = ollama_config.get("host", "http://localhost:11434")
-    # 建議之後換成 qwen2.5:3b 以獲得更好的中文效果
-    # model = "granite4:3b" # 或者保留原本的 "granite4:3b"
-
-    try:
-        client = Client(host=host)
-        response = client.generate(model=model, prompt=prompt)
-        raw_output = response["response"]
-
-        # 4. 解析輸出 (只回傳 Answer 部分)
-        final_answer = _parse_model_output(
-            raw_output, "zh" if is_contains_chinese(query) else "en"
-        )
-        return final_answer
-
-    except Exception as e:
-        print(f"Generate Error: {e}")
-        return "Sorry, generation failed."
+        print(f"[Generator Error] {e}")
+        return "Generation failed."
 
 
+# ==========================================
+# 4. Local Test (測試區)
+# ==========================================
 if __name__ == "__main__":
-    # 測試程式
-    query_zh = "法國的首都在哪裡？"
-    chunks = [
-        {"page_content": "法國（France），全名法蘭西共和國。"},
-        {"page_content": "巴黎（Paris）是法國的首都及最大都市。"},
+    # 模擬測試
+    print("Testing Generator...")
+
+    # 模擬資料
+    mock_chunks = [
+        {"page_content": "2018年，CleanCo 營收為 500萬。"},
+        {"page_content": "2020年，Retail Emporium 營收為 4.8億。"},
     ]
 
-    print("Testing Chinese Query...")
-    ans = generate_answer(query_zh, chunks)
-    print(f"Parsed Answer: {ans}")
+    # 嘗試建立一個本地 client 進行測試
+    try:
+        test_client = Client(host="http://localhost:11434")
 
-    print("\nTesting English Query...")
-    ans_en = generate_answer("What is the capital of France?", chunks)
-    print(f"Parsed Answer: {ans_en}")
+        # 測試比較題
+        q = "比較 CleanCo 2018 和 Retail Emporium 2020 的營收，誰比較高？"
+        print(f"\nQuestion: {q}")
+        ans = generate_answer(q, mock_chunks, test_client)
+        print(f"Result: {ans}")
 
-# def generate_answer(query, context_chunks, language="en"):
-#    context = "\n\n".join([chunk["page_content"] for chunk in context_chunks])
-# ENGLISH_prompt
-#    if language == "en":
-#        prompt = f"""You are a careful assistant. Follow these rules:
-# - Only use information from context; if not present, answer "I don't know."
-# - If context mentions dividends or their impacts, include them and don't omit available facts.
-
-# Question: {query}
-# Context:
-# {context}
-
-# Answer:"""
-
-# CHINESE_prompt
-#    else:
-#        prompt = f"""你是一個謹慎的助理，請只使用下方 context 回答，遵守：
-# - 只用 context 內容，沒有就回答「我不知道」。
-# - 嚴格比對公司名稱與年份，不要混淆不同公司／年份的數據。
-# - 如果 context 提到股息或影響，務必寫出，不要遺漏。
-
-# Question: {query}
-# Context:
-# {context}
-
-# Answer:
-# """
-
-#    ollama_config = load_ollama_config()
-#    client = Client(host=ollama_config["host"])
-#    response = client.generate(model=ollama_config["model"], prompt=prompt)
-#    return response["response"]
-
-
-# if __name__ == "__main__":
-# test the function
-#    query = "What is the capital of France?"
-#    context_chunks = [
-#        {"page_content": "France is a country in Europe. Its capital is Paris."},
-#        {
-#            "page_content": "The Eiffel Tower is located in Paris, the capital city of France."
-#        },
-#    ]
-#    answer = generate_answer(query, context_chunks)
-#    print("Generated Answer:", answer)
+    except Exception as e:
+        print(f"Skipping test, no local ollama found: {e}")

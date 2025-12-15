@@ -1,6 +1,8 @@
 #!/bin/bash
 
 set -e
+pip install -r requirements.txt
+python ./My_RAG/download_model.py
 
 log() {
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
