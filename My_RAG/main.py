@@ -96,6 +96,7 @@ Original question: {original_query}"""
 
 #--- MAIN  ---
 def main(query_path, docs_path, language, output_path):
+    language = (language or "en").lower()
     # 1. Load Data
     print("Loading documents...")
     docs_for_chunking = load_jsonl(docs_path)
@@ -118,16 +119,21 @@ def main(query_path, docs_path, language, output_path):
         "http://localhost:11434"        # Local Conda host
     ]
     ollama_client = None
+    embed_model = os.getenv("EMBED_MODEL", "qwen3-embedding:0.6b")
+
     for host in hosts_to_try:
         try:
             temp_client = Client(host=host)
-            temp_client.list() # Test connectivity
+            temp_client.embeddings(model=embed_model, prompt="ping")
             ollama_client = temp_client
             print(f"Connected to Ollama at {host}")
-            break # Successfully connected, exit loop
+            break
         except Exception as e:
             print(f"Warning: Failed to connect to Ollama at {host}. Trying next host. Error: {e}")
             continue
+
+    if ollama_client is None:
+        raise ConnectionError("Failed to connect to any Ollama host.")
     
     if ollama_client is None:
         raise ConnectionError("Failed to connect to any Ollama host.")
