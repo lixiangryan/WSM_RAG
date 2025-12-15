@@ -32,6 +32,8 @@ services:
       - OLLAMA_HOST=http://ollama:11434
       - GENERATOR_MODEL=granite4:3b
       - JUDGE_MODEL=gemma:2b
+      - EMBEDDING_EN_MODEL=nomic-embed-text
+      - EMBEDDING_ZH_MODEL=embeddinggemma
       # 將全域 API 超時設定為 120 秒 (2 分鐘)
       # 這會覆蓋 Python 客戶端預設的短時間超時
       - OPENAI_TIMEOUT=120

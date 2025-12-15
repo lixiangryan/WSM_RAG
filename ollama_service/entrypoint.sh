@@ -30,8 +30,24 @@ echo "\nOllama server is ready."
 echo "Pulling gemma:2b model (this will only happen if it's missing)..."
 
 # 4. 伺服器已就緒，現在才 pull 模型
+# (1) 裁判模型 (您組員原本的)
+echo "正在檢查並下載模型: gemma:2b"
 ollama pull gemma:2b
+
+# (2) 生成模型 (新增)
+echo "正在檢查並下載模型: granite4:3b"
 ollama pull granite4:3b
+
+# (3) Embedding 英文模型 (新增)
+echo "正在檢查並下載模型: nomic-embed-text"
+ollama pull nomic-embed-text
+
+# (4) Embedding 中文模型 (新增)
+echo "正在檢查並下載模型: embeddinggemma"
+ollama pull embeddinggemma
+
+
+echo "所有必要模型下載或檢查完畢。"
 
 echo "Model pull complete. Server is running and listening on 0.0.0.0"
 
