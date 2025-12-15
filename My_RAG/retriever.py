@@ -274,7 +274,8 @@ class HybridRetriever:
         for rank, idx in enumerate(kg_indices):
             if idx not in rrf_score: rrf_score[idx] = 0
             # KG 的權重可以調整，這裡假設它與其他兩者同等重要
-            rrf_score[idx] += 1 / (k + rank + 1)
+            # [Optimization] Lower KG weight to reduce noise (0.3x)
+            rrf_score[idx] += 0.3 / (k + rank + 1)
 
         # 根據 RRF 分數排序，由高到低
         sorted_indices = sorted(rrf_score.items(), key=lambda x: x[1], reverse=True)

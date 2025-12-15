@@ -245,10 +245,15 @@ class SimpleKnowledgeGraph:
         
         # Select Top-3 expansion terms
         # Filter: Must appear in at least 2 of the top chunks if we have enough chunks, else just freq
+        # [Optimization] Stricter PRF: Require co-occurrence in at least 2 docs if possible
+        if len(top_chunk_indices) >= 2:
+            candidate_entities = {k: v for k, v in candidate_entities.items() if v >= 2 or (v >= 1 and k.startswith("Year:"))}
+
         expansion_terms = sorted(candidate_entities.items(), key=lambda x: x[1], reverse=True)[:3]
         
         # 3. Re-score with Expansion
         # Add expansion terms with discounted weight (e.g., 0.5)
+        # [Optimization] Lower expansion weight to 0.2 to avoid drift
         expanded_entities = query_entities.copy()
         # We need to handle weighting in _compute_scores, so let's pass a weight map
         # But _compute_scores currently takes a set.
@@ -256,7 +261,7 @@ class SimpleKnowledgeGraph:
         
         entity_weights = {ent: 1.0 for ent in query_entities}
         for ent, freq in expansion_terms:
-            entity_weights[ent] = 0.5 # Discount factor for PRF terms
+            entity_weights[ent] = 0.2 # Discount factor for PRF terms
             
         final_scores = self._compute_scores(entity_weights)
         return final_scores

@@ -36,39 +36,49 @@ def generate_synonyms(entities, client, model="granite4:3b"):
     # We can't send all terms at once. Let's send batches of potentially related terms?
     # Or just send the top 100 terms and ask for clusters.
     
-    top_terms = raw_terms[:200] # Take top 200 most frequent terms
+    # [Optimization] Process more terms in batches
+    BATCH_SIZE = 100
+    TOP_N = 1000
     
-    prompt = f"""Group the following terms into synonym clusters.
+    top_terms = raw_terms[:TOP_N]
+    all_synonyms = {}
+    
+    logging.info(f"Processing top {len(top_terms)} terms in batches of {BATCH_SIZE}...")
+    
+    for i in range(0, len(top_terms), BATCH_SIZE):
+        batch = top_terms[i:i+BATCH_SIZE]
+        batch_str = ", ".join(batch)
+        
+        prompt = f"""Group the following terms into synonym clusters.
 Identify terms that refer to the same entity (e.g., "TSMC", "Taiwan Semiconductor", "台積電").
 Output a JSON object where the key is the canonical term (the most standard one) and the value is a list of synonyms.
+Only output valid JSON.
 Example: {{"TSMC": ["Taiwan Semiconductor", "台積電"], "Revenue": ["Sales", "Turnover"]}}
 
 Terms:
-{", ".join(top_terms)}
+{batch_str}
 
 JSON Output:"""
 
-    try:
-        logging.info("Sending request to LLM for synonym clustering...")
-        response = client.generate(model=model, prompt=prompt, stream=False, format="json")
-        content = response.get("response", "")
-        
-        clusters = json.loads(content)
-        
-        # Invert to Synonym -> Canonical
-        synonym_map = {}
-        for canonical, variants in clusters.items():
-            # Canonical maps to itself (optional, but good for consistency)
-            # synonym_map[canonical] = canonical 
-            for v in variants:
-                if v != canonical:
-                    synonym_map[v] = canonical
-                    
-        return synonym_map
-        
-    except Exception as e:
-        logging.error(f"LLM generation failed: {e}")
-        return {}
+        try:
+            logging.info(f"Sending batch {i//BATCH_SIZE + 1} request to LLM...")
+            # Use 'json' format to enforce valid JSON output from Ollama
+            response = client.generate(model=model, prompt=prompt, stream=False, format="json")
+            content = response.get("response", "")
+            
+            clusters = json.loads(content)
+            
+            # Invert to Synonym -> Canonical
+            for canonical, variants in clusters.items():
+                for v in variants:
+                    if v != canonical:
+                        all_synonyms[v] = canonical
+                        
+        except Exception as e:
+            logging.error(f"LLM batch processing failed: {e}")
+            continue
+
+    return all_synonyms
 
 def main():
     parser = argparse.ArgumentParser(description="Build Synonym Map for KG (Phase 6)")

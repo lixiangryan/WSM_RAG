@@ -500,6 +500,19 @@ docker-compose up --build
         3.  **Query Expansion**：查詢時自動將同義詞轉換為標準詞 (Canonical Term) 並加入檢索條件。
     *   **效果：** 完美解決中英夾雜與縮寫問題 (e.g., 查 "台積電" 也能搜到 "TSMC" 的文件)。
 
+### lixiang1202_optimize-rag-performance(1215_RegressionFix)
+**目標：** 修復 KG 引入後的雜訊問題 (Regression)，並擴大同義詞優化規模。
+
+**改動內容：**
+1.  **KG Weight Tuning (`My_RAG/retriever.py`)**:
+    *   **修正：** 將 RRF 中的 KG 權重下修至 **0.3** (原為 1.0)。
+    *   **目的：** 降低 KG 對整體排序的干擾，使其僅作為關鍵字命中的「加分項」，恢復 Recall 水準。
+2.  **Stricter PRF (`My_RAG/knowledge_graph.py`)**:
+    *   **修正：** 提高擴展門檻 (需在 2+ 文件共現) 並降低擴展詞權重 (0.5 -> 0.2)。
+    *   **目的：** 減少錯誤聯想帶來的雜訊。
+3.  **Synonym Builder Scale-up (`scripts/build_synonyms.py`)**:
+    *   **優化：** 實作批次處理 (Batch Size=100)，將處理規模擴大至 Top-1000 實體。
+
 ## Change Log from 1210
 - **lixiang1202_optimize-rag-performance(1210)_part2_Pre-computed-KG**:
     - 實作「小抄戰略 (Cheat Sheet Strategy)」：預先計算 Knowledge Graph 並存為 `kg_index.json` 以便快速載入。
@@ -541,6 +554,10 @@ docker-compose up --build
 
 - **lixiang1202_optimize-rag-performance(12142145）**:
     - **KG Phase 6**: 實作 **Synonym Resolution**，利用 LLM 離線聚類生成同義詞表，解決中英夾雜與縮寫檢索問題。
+
+- **lixiang1202_optimize-rag-performance(1215_RegressionFix)**:
+    - **Regression Fix**: 下修 KG RRF 權重 (1.0 -> 0.3) 並嚴格化 PRF 擴展條件，解決分數下降問題。
+    - **Optimization**: 同義詞建構腳本升級為批次處理 Top-1000 實體。
 
 ## 🚀 未來工作 (Future Work)
 
@@ -689,3 +706,5 @@ graph TD
 - **實時效能監控 (Real-time Performance Monitoring):** 建立 RAG 系統各環節的實時監控，識別瓶頸並進行優化。
 - **持續評估框架 (Continuous Evaluation Framework):** 建立自動化的評估流程，能夠快速反饋不同優化策略的效果。
 - **模型微調探索 (Model Fine-tuning Exploration):** 針對特定任務和資料集，微調嵌入模型、重排序模型或生成模型，以獲得更高的專案效能。
+
+
