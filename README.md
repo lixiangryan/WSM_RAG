@@ -513,6 +513,23 @@ docker-compose up --build
 3.  **Synonym Builder Scale-up (`scripts/build_synonyms.py`)**:
     *   **優化：** 實作批次處理 (Batch Size=100)，將處理規模擴大至 Top-1000 實體。
 
+### lixiang1202_optimize-rag-performance(Phase 8) - Global Co-occurrence Graph
+**目標：** 解決執行時期 (Runtime) PRF 的不穩定性與延遲問題，建立真正「全域視角」的實體關聯網絡。
+
+**改動內容：**
+
+1.  **全域共現圖譜 (Global Co-occurrence Graph - `My_RAG/knowledge_graph.py`):**
+    *   **機制升級：** 知識圖譜 (KG) 不再僅是「倒排索引」，而是升級為 **V3.0** 架構，內部儲存了全語料庫的共現矩陣 (`Entity <-> Entity`)。
+    *   **建構期計算 (Index-Time Computation)：**
+        *   在 `scripts/build_kg_index.py` 階段，一次性掃描所有文件，計算每一對實體在同一區塊出現的頻率。
+        *   時間複雜度轉移至離線階段，Runtime 查詢變為 $O(1)$ 查表。
+    *   **自主查詢擴展 (Autonomous Query Expansion)：**
+        *   **取代 Runtime PRF：** 不再依賴初步檢索結果 (Top-3 Chunks) 來猜測相關詞，而是直接查詢全域圖譜。
+        *   **穩定性：** 如果「TSMC」在整個語料庫中總是與「Wafer」一起出現，系統就會穩定地擴展該詞，完全不受單次檢索誤差影響。
+    *   **效益：** 
+        *   **速度提升：** 省去了一次完整的圖譜搜索與統計過程。
+        *   **抗雜訊：** 基於全域統計的關聯性遠比單次查詢的局部結果更可靠，大幅減少 Query Drift。
+
 ## Change Log from 1210
 - **lixiang1202_optimize-rag-performance(1210)_part2_Pre-computed-KG**:
     - 實作「小抄戰略 (Cheat Sheet Strategy)」：預先計算 Knowledge Graph 並存為 `kg_index.json` 以便快速載入。
@@ -558,6 +575,10 @@ docker-compose up --build
 - **lixiang1202_optimize-rag-performance(1215_RegressionFix)**:
     - **Regression Fix**: 下修 KG RRF 權重 (1.0 -> 0.3) 並嚴格化 PRF 擴展條件，解決分數下降問題。
     - **Optimization**: 同義詞建構腳本升級為批次處理 Top-1000 實體。
+
+- **lixiang1202_optimize-rag-performance(Phase 8)**:
+    - **Global Co-occurrence Graph (v3.0)**: 升級 KG 架構，離線計算全域共現矩陣。
+    - **Stable Query Expansion**: 取代不穩定的 Runtime PRF，改用全域圖譜進行 $O(1)$ 查表擴展，顯著提升查詢穩定性與速度。
 
 ## 🚀 未來工作 (Future Work)
 

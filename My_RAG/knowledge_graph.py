@@ -17,9 +17,10 @@ class SimpleKnowledgeGraph:
     def __init__(self, chunks: List[Dict[str, Any]], index_path: Optional[str] = None):
         self.chunks = chunks
         self.entity_map = defaultdict(set) # Entity -> Set[ChunkIndex]
-        self.chunk_map = defaultdict(list) # ChunkIndex -> List[Entity] (Forward Index for PRF)
+        self.chunk_map = defaultdict(list) # ChunkIndex -> List[Entity] (Forward Index)
         self.doc_freqs = defaultdict(int)  # Entity -> Document Frequency (DF)
-        self.synonym_map = {} # Synonym -> Canonical Term (e.g. "台積電" -> "TSMC")
+        self.co_occurrence_map = defaultdict(lambda: defaultdict(int)) # Entity -> {RelatedEntity -> Frequency}
+        self.synonym_map = {} # Synonym -> Canonical Term
         self.total_docs = len(chunks)
         self.stemmer = PorterStemmer()
         
@@ -45,36 +46,39 @@ class SimpleKnowledgeGraph:
             self._build_graph()
 
     def save(self, path: str):
-        """Saves the entity_map and doc_freqs to a JSON file."""
-        # Convert sets to lists for JSON serialization
+        """Saves the entity_map and co_occurrence_map to a JSON file."""
+        # Convert defaultdicts to regular dicts for JSON
+        co_occurrence_json = {k: dict(v) for k, v in self.co_occurrence_map.items()}
+        
         data = {
-            "version": "2.1",
+            "version": "3.0",
             "total_docs": self.total_docs,
             "entity_map": {k: list(v) for k, v in self.entity_map.items()},
             "chunk_map": self.chunk_map,
-            "doc_freqs": self.doc_freqs
+            "doc_freqs": self.doc_freqs,
+            "co_occurrence_map": co_occurrence_json
         }
         try:
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False)
-            print(f"[KG] Index (v2.1) saved to {path}")
+            print(f"[KG] Index (v3.0) with Co-occurrence Graph saved to {path}")
         except Exception as e:
             print(f"[KG] Error saving index: {e}")
 
     def load(self, path: str) -> bool:
-        """Loads the entity_map from a JSON file. Returns True if successful and valid."""
+        """Loads the index from a JSON file."""
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
-            # Check Version
-            if data.get("version") != "2.1":
-                print("[KG] Index version mismatch (expected 2.1). Rebuilding...")
+            # Check Version (We accept 3.0)
+            if data.get("version") != "3.0":
+                print(f"[KG] Index version mismatch (got {data.get('version')}, expected 3.0). Rebuilding...")
                 return False
 
             loaded_map = data["entity_map"]
             
-            # Convert lists back to sets and Validate
+            # Convert lists back to sets
             temp_map = defaultdict(set)
             max_chunk_idx = -1
             
@@ -86,19 +90,23 @@ class SimpleKnowledgeGraph:
                         max_chunk_idx = max_idx
                 temp_map[k] = chunk_indices
             
-            # VALIDATION: Check if index matches current chunks
+            # Validation
             if max_chunk_idx >= len(self.chunks):
                 print(f"[KG] WARNING: Index mismatch! Index refers to chunk {max_chunk_idx}, but we only have {len(self.chunks)} chunks.")
-                print("[KG] Discarding pre-computed index and falling back to runtime build.")
                 return False
                 
             self.entity_map = temp_map
-            # Load Chunk Map (Convert keys to int because JSON keys are always strings)
             self.chunk_map = defaultdict(list, {int(k): v for k, v in data.get("chunk_map", {}).items()})
             self.doc_freqs = defaultdict(int, data.get("doc_freqs", {}))
             self.total_docs = data.get("total_docs", len(self.chunks))
             
-            print(f"[KG] Successfully loaded {len(self.entity_map)} entities. Index is valid.")
+            # Load Co-occurrence Map
+            co_occurrence_data = data.get("co_occurrence_map", {})
+            for k, v in co_occurrence_data.items():
+                for neighbor, freq in v.items():
+                    self.co_occurrence_map[k][neighbor] = freq
+
+            print(f"[KG] Successfully loaded {len(self.entity_map)} entities and Co-occurrence Graph.")
             return True
             
         except Exception as e:
@@ -113,29 +121,18 @@ class SimpleKnowledgeGraph:
         return False
 
     def _extract_entities(self, text: str, is_query: bool = False) -> Set[str]:
-        """
-        Extracts entities from text.
-        
-        Args:
-            text: The text to extract from.
-            is_query: If True, uses looser extraction rules.
-        """
+        """Extracts entities from text."""
         entities = set()
         
-        # 1. Extract Years (4-digit numbers) - Works for both languages
-        # Fix: Use non-capturing group for prefix or capture full match
+        # 1. Extract Years (4-digit numbers)
         years = re.findall(r"\b(?:19|20)\d{2}\b", text)
         for y in years:
             entities.add(f"Year:{y}")
 
         # 2. Chinese Entity Extraction
         if self._is_contains_chinese(text):
-            # Use jieba POS tagging to extract specific entity types
-            # nt: Organization, nr: Person, ns: Location, eng: English, nz: Other Noun, n: Noun, vn: Verbal Noun
             words = pseg.cut(text)
             valid_pos = {'nt', 'nr', 'ns', 'eng', 'nz', 'n', 'vn'} 
-            
-            # Expanded Chinese Stopwords to filter generic nouns
             cn_stopwords = {
                 "公司", "營收", "年報", "報告", "什麼", "多少", "為何", "如何",
                 "金額", "單位", "新台幣", "部分", "情形", "年度", "權益", "影響", 
@@ -146,12 +143,10 @@ class SimpleKnowledgeGraph:
             }
             
             for word, flag in words:
-                # For Query, we accept 'x' (unknown) as well just in case
                 if (flag in valid_pos or (is_query and flag in ['x'])) and len(word) > 1:
                      if word not in cn_stopwords:
                         entities.add(f"Term:{word.lower()}")
             
-            # Also try to catch English terms in Chinese text using regex (often cleaner than jieba's 'eng')
             if is_query:
                  tokens = re.findall(r"\b[A-Za-z][a-zA-Z0-9&'\-\.]*\b", text)
             else:
@@ -160,18 +155,14 @@ class SimpleKnowledgeGraph:
             for t in tokens:
                 if len(t) > 2:
                     entities.add(f"Term:{t.lower()}")
-
             return entities
 
-        # 3. English Entity Extraction (Original Logic)
+        # 3. English Entity Extraction
         if is_query:
-            # Looser regex for Query: Allow lowercase letters
             tokens = re.findall(r"\b[A-Za-z][a-zA-Z0-9&'\-\.]*\b", text)
         else:
-            # Strict regex for Document Indexing: Capitalized words only
             tokens = re.findall(r"\b[A-Z][a-zA-Z0-9&'\-\.]*\b", text)
         
-        # Expanded Stopwords list (Case-INsensitive checked below)
         stopwords = {
             "the", "a", "an", "in", "on", "at", "to", "for", "of", "and", "or", "but", "with", "by", 
             "from", "as", "if", "while", "where", "when", "then", "it", "this", "that", "these", "those",
@@ -183,9 +174,7 @@ class SimpleKnowledgeGraph:
 
         for t in tokens:
             t_lower = t.lower()
-            # Filter distinct terms (length > 2) and skip stopwords
             if len(t) > 2 and t_lower not in stopwords and not t.isdigit():
-                 # Stemming for English terms to improve recall (e.g. "investing" -> "invest")
                  stemmed_t = self.stemmer.stem(t_lower)
                  entities.add(f"Term:{stemmed_t}")
 
@@ -195,74 +184,105 @@ class SimpleKnowledgeGraph:
         """Constructs the Entity-Document graph."""
         for i, chunk in enumerate(self.chunks):
             text = chunk.get("page_content", "")
-            # Indexing time: Strict Mode (is_query=False)
             entities = self._extract_entities(text, is_query=False)
             self.chunk_map[i] = list(entities) # Store Forward Index
             for ent in entities:
                 self.entity_map[ent].add(i)
                 self.doc_freqs[ent] += 1
+        
+        # Build Co-occurrence Graph after basic graph is done
+        self._build_co_occurrence_graph()
+
+    def _build_co_occurrence_graph(self):
+        """Builds the global entity co-occurrence map."""
+        print("[KG] Building Global Co-occurrence Graph...")
+        count = 0
+        for chunk_idx, entity_list in self.chunk_map.items():
+            # For every pair of entities in the chunk
+            # O(N^2) where N is number of entities in a chunk (usually small < 20)
+            sorted_ents = sorted(entity_list) # Sort to ensure consistent order if needed, or just iterate
+            n = len(sorted_ents)
+            if n < 2:
+                continue
+            
+            for i in range(n):
+                for j in range(i + 1, n):
+                    ent_a = sorted_ents[i]
+                    ent_b = sorted_ents[j]
+                    
+                    self.co_occurrence_map[ent_a][ent_b] += 1
+                    self.co_occurrence_map[ent_b][ent_a] += 1
+            count += 1
+        print(f"[KG] Co-occurrence Graph built from {count} chunks.")
+
+    def expand_query_globally(self, query_entities: Set[str], top_k: int = 3) -> Dict[str, float]:
+        """
+        Expands query entities using the GLOBAL co-occurrence graph.
+        Returns a dict of {ExpandedEntity: Weight}.
+        """
+        candidates = defaultdict(int)
+        
+        for ent in query_entities:
+            if ent in self.co_occurrence_map:
+                neighbors = self.co_occurrence_map[ent]
+                for neighbor, freq in neighbors.items():
+                    if neighbor not in query_entities:
+                        candidates[neighbor] += freq
+        
+        # Filter: Must co-occur at least 2 times globally (Noise filter)
+        valid_candidates = {k: v for k, v in candidates.items() if v >= 2}
+        
+        if not valid_candidates:
+            return {}
+
+        # Sort by frequency
+        sorted_candidates = sorted(valid_candidates.items(), key=lambda x: x[1], reverse=True)[:top_k]
+        
+        # Normalize weights (0.0 - 0.5)
+        # Max freq might be huge, so just give a fixed discounted weight?
+        # Or relative to max freq. Let's stick to fixed conservative weights for now.
+        
+        expansion_weights = {}
+        for ent, freq in sorted_candidates:
+            # Check if it's a "Year" -> Give slightly less weight to avoid year drift
+            weight = 0.2
+            if ent.startswith("Year:"):
+                weight = 0.1
+            expansion_weights[ent] = weight
+            
+        return expansion_weights
 
     def search(self, query: str, use_prf: bool = True) -> Dict[int, float]:
         """
         Traverses the graph to find chunks related to entities in the query.
-        Supports Pseudo-Relevance Feedback (PRF) to expand query with related entities.
+        Uses Global Co-occurrence for Expansion.
         """
-        # 1. Initial Search
+        # 1. Extract Entities from Query
         query_entities = self._extract_entities(query, is_query=True)
         
-        # Phase 6: Synonym Expansion
-        # If a query entity is a known synonym, replace/add the canonical term
+        # Synonym Expansion
         expanded_query_entities = set(query_entities)
         for ent in query_entities:
-            # Check Term:xxx
             term_body = ent.split(":", 1)[1] if ":" in ent else ent
             if term_body in self.synonym_map:
                 canonical = self.synonym_map[term_body]
-                # Add canonical term (assuming it's a Term)
                 expanded_query_entities.add(f"Term:{canonical}")
-                # Also try stemmed version of canonical
                 stemmed_canonical = self.stemmer.stem(canonical.lower())
                 expanded_query_entities.add(f"Term:{stemmed_canonical}")
-
-        scores = self._compute_scores(expanded_query_entities)
         
-        if not use_prf or not scores:
-            return scores
-
-        # 2. Pseudo-Relevance Feedback (PRF)
-        # Get Top-3 Chunks from initial search
-        sorted_indices = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:3]
-        top_chunk_indices = [idx for idx, score in sorted_indices]
+        # Initial scoring with explicit query terms
+        # Convert set to dict with weight 1.0
+        entity_weights = {ent: 1.0 for ent in expanded_query_entities}
         
-        # Mine frequent entities from these chunks
-        candidate_entities = defaultdict(int)
-        for idx in top_chunk_indices:
-            # Use Forward Index to get entities in this chunk
-            chunk_ents = self.chunk_map.get(idx, []) 
-            for ent in chunk_ents:
-                if ent not in query_entities: # Don't add what we already have
-                    candidate_entities[ent] += 1
-        
-        # Select Top-3 expansion terms
-        # Filter: Must appear in at least 2 of the top chunks if we have enough chunks, else just freq
-        # [Optimization] Stricter PRF: Require co-occurrence in at least 2 docs if possible
-        if len(top_chunk_indices) >= 2:
-            candidate_entities = {k: v for k, v in candidate_entities.items() if v >= 2 or (v >= 1 and k.startswith("Year:"))}
-
-        expansion_terms = sorted(candidate_entities.items(), key=lambda x: x[1], reverse=True)[:3]
-        
-        # 3. Re-score with Expansion
-        # Add expansion terms with discounted weight (e.g., 0.5)
-        # [Optimization] Lower expansion weight to 0.2 to avoid drift
-        expanded_entities = query_entities.copy()
-        # We need to handle weighting in _compute_scores, so let's pass a weight map
-        # But _compute_scores currently takes a set.
-        # Let's refactor _compute_scores to take a Dict[Entity, WeightMultiplier]
-        
-        entity_weights = {ent: 1.0 for ent in query_entities}
-        for ent, freq in expansion_terms:
-            entity_weights[ent] = 0.2 # Discount factor for PRF terms
-            
+        # 2. Global Graph Expansion (Replaces Runtime PRF)
+        if use_prf:
+            expansion_dict = self.expand_query_globally(expanded_query_entities, top_k=3)
+            # Merge expansion weights
+            for ent, weight in expansion_dict.items():
+                if ent not in entity_weights:
+                    entity_weights[ent] = weight
+                    
+        # 3. Compute Final Scores
         final_scores = self._compute_scores(entity_weights)
         return final_scores
 

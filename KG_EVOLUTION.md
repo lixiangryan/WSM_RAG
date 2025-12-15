@@ -101,3 +101,21 @@
     *   **批次處理 (Batch Processing)：** 將 `scripts/build_synonyms.py` 升級為批次處理模式。
     *   **規模擴大：** 處理 Top-1000 高頻實體（原為 Top-200），大幅提升同義詞覆蓋率。
     *   **穩健性：** 加入錯誤處理與 JSON 格式驗證。
+
+## 第八階段：全域共現圖譜 (Global Co-occurrence Graph) - 自主查詢擴展
+**目標：** 解決執行時期 (Runtime) PRF 的兩大缺點：
+1.  **依賴性 (Dependency)：** 擴展品質完全取決於初步檢索的準確度。如果 Top-3 Chunks 找錯了，擴展就會產生漂移 (Drift)。
+2.  **效率 (Efficiency)：** 執行時期需要兩階段檢索 (Search -> Extract -> Expand -> Search)，增加了延遲。
+
+*   **機制 (Global Graph Expansion)：**
+    *   **建構期 (Indexing Time)：** 在建立索引時，計算整個語料庫中所有實體的 **共現頻率 (Co-occurrence Frequency)**。
+        *   建立一個全域圖譜 `Entity A <--> Entity B (Weight)`。
+        *   時間複雜度：O(N * AvgEntityPerChunk^2)，離線計算一次即可。
+    *   **索引升級 (v3.0)：** `kg_index` 格式升級，新增 `co_occurrence_map` 結構。
+    *   **執行時期 (Runtime)：**
+        *   當使用者輸入查詢，直接查表 (Global Graph) 找出最強關聯實體。
+        *   **無需初步檢索**，直接獲得全域統計上最相關的擴展詞。
+*   **優勢：**
+    *   **穩定性 (Stability)：** 擴展建立在「全域統計事實」之上，而非單次查詢的偶然結果。例如 "TSMC" 在全語料中總是與 "Wafer" 共現，這是穩定的知識。
+    *   **速度 (Speed)：** 省去一次完整的圖譜遍歷，查詢擴展變成 O(1) 查表操作。
+    *   **抗雜訊：** 設定共現頻率門檻 (e.g., >= 2)，有效過濾偶發的雜訊連結。
