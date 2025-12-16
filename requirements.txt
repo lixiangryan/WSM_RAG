@@ -9,3 +9,5 @@ sentence-transformers
 transformers
 torch
 numpy
+requests
+nltk
