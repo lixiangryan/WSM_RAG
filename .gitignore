@@ -11,8 +11,15 @@ __pycache__/
 configs/config_local.yaml
 
 # output files
-predictions/data/
-configs/config_local.yaml
 __pycache__/
 .DS_Store
 .venv/
+
+local_bge_m3/
+output/
+predictions/
+*.jsonl
+
+# 忽略虛擬環境
+wsm_final_env/
+.env

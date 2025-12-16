@@ -8,33 +8,39 @@ import ollama
 import math
 import requests
 
-# ==========================================
-# 0. 環境感知配置 (Environment Config)
-# ==========================================
-# 嘗試從環境變數讀取，如果沒有則預設為 localhost (本地開發模式)
-# 比賽時 Docker 會自動解析 ollama-gateway，或者你可以通過 run.sh 注入環境變數
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
 
-# 判斷是否在比賽環境 (簡單判斷邏輯：如果 host 包含 gateway 或是特定環境變數)
-IS_COMPETITION_ENV = "ollama-gateway" in OLLAMA_HOST or os.getenv("RAG_ENV") == "competition"
+# 判斷是否在比賽環境
+IS_COMPETITION_ENV = (
+    "ollama-gateway" in OLLAMA_HOST or os.getenv("RAG_ENV") == "competition"
+)
 
-# Rerank API 只有在比賽環境才有，本地我們用 CrossEncoder
 RERANK_API_URL = f"{OLLAMA_HOST}/rerank"
 
-print(f"[Config] Host: {OLLAMA_HOST}, Mode: {'Competition (API)' if IS_COMPETITION_ENV else 'Local (CrossEncoder)'}")
+print(
+    f"[Config] Host: {OLLAMA_HOST}, Mode: {'Competition (API)' if IS_COMPETITION_ENV else 'Local (CrossEncoder)'}"
+)
 
-# ==========================================
+
 # 1. Retriever Configuration
-# ==========================================
+# 優先檢查本地模型，確保斷網能跑
+if os.path.exists("./local_bge_m3"):
+    EMBEDDING_MODEL = "./local_bge_m3"
+    print("[Config] Using Local Embedding Model: ./local_bge_m3")
+else:
+    EMBEDDING_MODEL = "BAAI/bge-m3"
+    print("[Config] Using HuggingFace Embedding Model: BAAI/bge-m3")
+
+
 class RAGConfig:
     SETTINGS = {
         "zh": {
-            "vector_model": "qwen2.5:3b",  # 建議改用你剛下載的 qwen 或 bge-m3
+            "vector_model": EMBEDDING_MODEL,
             "bm25_tokenizer": "jieba",
             "weights": {"bm25": 0.4, "vec": 0.6},
         },
         "en": {
-            "vector_model": "qwen2.5:3b", 
+            "vector_model": EMBEDDING_MODEL,
             "bm25_tokenizer": "space",
             "weights": {"bm25": 0.5, "vec": 0.5},
         },
@@ -45,12 +51,15 @@ class RAGConfig:
         cfg = cls.SETTINGS.get(lang, cls.SETTINGS["en"])
         return cfg.get(key)
 
+
 # ==========================================
 # 2. 檢索模型 (Retrieval Models)
 # ==========================================
 
+
 class SparseRetriever:
-    """ BM25 """
+    """BM25"""
+
     def __init__(self, chunks, language):
         self.corpus = [chunk["page_content"] for chunk in chunks]
         self.language = language
@@ -79,7 +88,8 @@ class SparseRetriever:
 
 
 class VectorRetriever:
-    """ 向量檢索 (Vector Retrieval) """
+    """向量檢索 (Vector Retrieval)"""
+
     def __init__(self, chunks, language, client):
         self.chunks = chunks
         self.language = language
@@ -91,18 +101,24 @@ class VectorRetriever:
     def _index_documents(self):
         print(f"[{self.language}] Vector Indexing start with {self.model_name}...")
         try:
-            # 使用 batch 處理以防記憶體爆炸
-            batch_size = 32
+            # [Optimization] 使用 batch 處理以防記憶體爆炸
+            batch_size = 16  # 稍微調小一點，比較安全
             all_embeddings = []
             for i in range(0, len(self.corpus), batch_size):
-                batch = self.corpus[i:i+batch_size]
+                batch = self.corpus[i : i + batch_size]
+                # 這裡要小心，如果 ollama 版本太舊會沒有 embed 方法
                 res = self.client.embed(model=self.model_name, input=batch)
                 all_embeddings.extend(res["embeddings"])
-            
+
             embeddings = np.array(all_embeddings)
             print(f"[SUCCESS] Vector model indexed {len(embeddings)} chunks.")
             return embeddings
 
+        except AttributeError:
+            print(
+                f"[Fatal Error] 你的 Ollama 套件版本太舊，不支援 embed！請執行 pip install --upgrade ollama"
+            )
+            return np.array([])
         except Exception as e:
             print(f"[Error] Embedding failed: {e}")
             return np.array([])
@@ -124,53 +140,69 @@ class VectorRetriever:
             results[idx] = scores[idx]
         return results
 
+
 # ==========================================
 # 3. Hybrid Reranker (Auto-Switch)
 # ==========================================
 
+
 class HybridReranker:
-    """
-    自動切換模式的 Reranker：
-    - 本地模式 (Local): 使用 sentence-transformers (CrossEncoder)
-    - 比賽模式 (Comp): 使用 API (requests)
-    """
+
     def __init__(self, api_url: str):
         self.api_url = api_url
         self.is_api_mode = IS_COMPETITION_ENV
         self.local_model = None
-        
+
         if not self.is_api_mode:
             print("[Reranker] Detected Local Mode. Loading local CrossEncoder...")
             try:
                 from sentence_transformers import CrossEncoder
-                # 使用輕量級模型，避免本地跑太慢
-                self.local_model = CrossEncoder('BAAI/bge-reranker-base', device='cpu')
-            except ImportError:
-                print("[Warning] sentence-transformers not installed. Reranking will be skipped.")
+
+                # [Critical] 這裡如果斷網且沒下載模型，會直接掛掉。
+                # 建議在 download_model.py 裡也要下載 'BAAI/bge-reranker-base'
+                if os.path.exists("./local_bge_reranker"):
+                    print("[Reranker] Loading from local storage...")
+                    rerank_model_path = "./local_bge_reranker"
+                else:
+                    print("[Reranker] Local model not found, trying HuggingFace...")
+                    rerank_model_path = "BAAI/bge-reranker-base"
+
+                self.local_model = CrossEncoder(rerank_model_path, device="cpu")
             except Exception as e:
-                print(f"[Warning] Failed to load local model: {e}. Reranking will be skipped.")
+                print(
+                    f"[Warning] Failed to load local Reranker: {e}. Reranking step will be SKIPPED."
+                )
+                self.local_model = None
 
     def compute_score(self, pairs):
-        # 1. 本地模式
+        # 1. 本地模式 (Local Mode)
         if not self.is_api_mode:
             if self.local_model:
                 try:
-                    scores = self.local_model.predict(pairs)
+                    # [Optimization] 加入 batch_size 和隱藏進度條以加速
+                    scores = self.local_model.predict(
+                        pairs,
+                        batch_size=4,
+                        show_progress_bar=False,
+                        num_workers=0,  # 避免多執行緒在某些環境下的 overhead
+                    )
                     return np.array(scores)
                 except Exception as e:
                     print(f"[Local Rerank Error] {e}")
                     return np.zeros(len(pairs))
             else:
-                return np.zeros(len(pairs)) # Skip rerank
+                return np.zeros(len(pairs))  # Skip rerank if model not loaded
 
-        # 2. 比賽 API 模式
+        # 2. 比賽 API 模式 (Competition Mode)
         MAX_PAIRS_PER_CALL = 32
         all_scores = []
         for i in range(0, len(pairs), MAX_PAIRS_PER_CALL):
             batch_pairs = pairs[i : i + MAX_PAIRS_PER_CALL]
             payload = {"pairs": [{"text1": a, "text2": b} for a, b in batch_pairs]}
             try:
-                resp = requests.post(self.api_url, json=payload, timeout=10) # 增加 timeout
+                resp = requests.post(
+                    self.api_url, json=payload, timeout=5  # 縮短 timeout 避免卡太久
+                )
                 if resp.status_code == 200:
                     scores = resp.json().get("scores", [])
                     all_scores.extend(scores)
@@ -183,39 +215,44 @@ class HybridReranker:
 
         return np.array(all_scores)
 
+
 # ==========================================
 # 4. 主流程 (Main Pipeline)
 # ==========================================
+
 
 class EnsembleRetriever:
     def __init__(self, chunks, language, client):
         self.chunks = chunks
         self.language = language
         self.weights = RAGConfig.get(language, "weights")
-        
+
         self.sparse_retriever = SparseRetriever(chunks, language)
         self.vector_retriever = VectorRetriever(chunks, language, client)
-        
-        # 使用 HybridReranker 替代原本的 RemoteFlagReranker
         self.reranker = HybridReranker(api_url=RERANK_API_URL)
 
     def _normalize(self, results: Dict[int, float]) -> Dict[int, float]:
-        if not results: return {}
+        if not results:
+            return {}
         scores = np.array(list(results.values()))
         if np.max(scores) == np.min(scores):
             return {k: 1.0 for k in results.keys()}
-        return dict(zip(results.keys(), (scores - np.min(scores)) / (np.max(scores) - np.min(scores))))
+        return dict(
+            zip(
+                results.keys(),
+                (scores - np.min(scores)) / (np.max(scores) - np.min(scores)),
+            )
+        )
 
     def retrieve(self, query: str, top_k: int) -> List[Dict[str, Any]]:
-        # 
-        # 1. 檢索
+        # 1. 初步檢索
         bm25_res = self.sparse_retriever.search(query)
         vec_res = self.vector_retriever.search(query)
-        
+
         bm25_norm = self._normalize(bm25_res)
         vec_norm = self._normalize(vec_res)
 
-        # 2. 融合
+        # 2. 融合分數
         all_indices = set(bm25_norm.keys()) | set(vec_norm.keys())
         merged_results = []
         alpha, beta = self.weights["vec"], self.weights["bm25"]
@@ -224,32 +261,35 @@ class EnsembleRetriever:
             s_bm25 = bm25_norm.get(idx, 0.0)
             s_vec = vec_norm.get(idx, 0.0)
             fusion_score = (beta * s_bm25) + (alpha * s_vec)
-            if s_bm25 > 0 and s_vec > 0: fusion_score *= 1.1 # Hybrid Bonus
-            
-            merged_results.append({
-                "index": idx, 
-                "score": fusion_score, 
-                "chunk": self.chunks[idx]
-            })
+            if s_bm25 > 0 and s_vec > 0:
+                fusion_score *= 1.1  # Hybrid Bonus
+
+            merged_results.append(
+                {"index": idx, "score": fusion_score, "chunk": self.chunks[idx]}
+            )
 
         # 3. 重排序 (Rerank)
-        # 只對前 Top 50 進行 Rerank 以節省時間
         merged_results.sort(key=lambda x: x["score"], reverse=True)
-        rerank_candidates = merged_results[:50]
-        
+
+        # [Critical Optimization] 只對前 15 名進行 Rerank！
+        # 之前是 50，這在 CPU 上會導致超時 (50s/it -> 10s/it)
+        RERANK_TOP_K = 15
+        rerank_candidates = merged_results[:RERANK_TOP_K]
+
         if rerank_candidates:
-            pairs = [[query, item["chunk"]["page_content"]] for item in rerank_candidates]
+            pairs = [
+                [query, item["chunk"]["page_content"]] for item in rerank_candidates
+            ]
             new_scores = self.reranker.compute_score(pairs)
-            
+
             for i, item in enumerate(rerank_candidates):
-                # 如果 Rerank 有效 (分數不為0)，使用新分數；否則保留舊分數
-                if np.sum(np.abs(new_scores)) > 0: 
+                if np.sum(np.abs(new_scores)) > 0:
                     item["score"] = new_scores[i]
 
         # 4. 再次排序並回傳 Top-K
         merged_results.sort(key=lambda x: x["score"], reverse=True)
         return [item["chunk"] for item in merged_results[:top_k]]
 
+
 def create_retriever(chunks, language, client) -> EnsembleRetriever:
-    # 確保傳入的 client 也是指向正確的 host
     return EnsembleRetriever(chunks, language, client)

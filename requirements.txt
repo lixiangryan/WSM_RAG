@@ -1,11 +1,31 @@
-jieba
-jsonlines
-ollama
-pydantic
-PyYAML
-rank_bm25
-tqdm
-sentence-transformers
-transformers
-torch
-numpy
+# 指定 CPU 來源 (給 Linux 用)
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# --- 智慧判斷區 (Smart Selection) ---
+# 如果是 Mac (Darwin)，安裝普通版
+torch==2.2.2; sys_platform == 'darwin'
+torchvision==0.17.2; sys_platform == 'darwin'
+torchaudio==2.2.2; sys_platform == 'darwin'
+
+# 如果是 Linux (比賽環境)，強制安裝 CPU 輕量版 (保命關鍵!)
+torch==2.2.2+cpu; sys_platform == 'linux'
+torchvision==0.17.2+cpu; sys_platform == 'linux'
+torchaudio==2.2.2+cpu; sys_platform == 'linux'
+
+# --- 通用套件區 ---
+sentence-transformers==2.7.0
+transformers==4.41.2
+rank_bm25==0.2.2
+numpy<2.0.0
+langchain==0.1.16
+langchain-community==0.0.34
+langchain-core==0.1.45
+langchain-text-splitters==0.0.1
+jieba==0.42.1
+pdfplumber==0.11.0
+pydantic==2.7.0
+jsonlines==4.0.0
+requests==2.31.0
+tqdm==4.66.2
+ollama==0.1.8
+PyYAML==6.0.1
