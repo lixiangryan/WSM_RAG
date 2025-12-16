@@ -93,7 +93,8 @@ class VectorRetriever:
         print(f"[{self.language}] Vector Indexing start with {self.model_name}...")
         try:
             # 使用 batch 處理以防記憶體爆炸
-            batch_size = 32
+            # 使用 batch 處理以防記憶體爆炸 (Optimization from main: 32 -> 16)
+            batch_size = 16
             all_embeddings = []
             for i in range(0, len(self.corpus), batch_size):
                 batch = self.corpus[i:i+batch_size]
@@ -259,7 +260,10 @@ class EnsembleRetriever:
         # 3. 重排序 (Rerank)
         # 只對前 Top 50 進行 Rerank 以節省時間
         merged_results.sort(key=lambda x: x["score"], reverse=True)
-        rerank_candidates = merged_results[:50]
+        # [Critical Optimization] 只對前 15 名進行 Rerank！(Optimization from main)
+        # 之前是 50，這在 CPU 上會導致超時 (50s/it -> 10s/it)
+        RERANK_TOP_K = 15
+        rerank_candidates = merged_results[:RERANK_TOP_K]
         
         if rerank_candidates:
             pairs = [[query, item["chunk"]["page_content"]] for item in rerank_candidates]

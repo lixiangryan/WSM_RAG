@@ -46,3 +46,9 @@ pip install -r requirements.txt
 *   **Feature Merge**: Cherry-picked Phase 8 KG files from `lixiang1202_optimize-rag-performance`.
 *   **Integration**: Wired up `SimpleKnowledgeGraph` in `retriever.py` to provide a "Bonus Signal" (boosting relevance score if an entity match is found).
 *   **Optimization**: Enabled "Index-Time Check" for query expansion to avoid runtime latencies.
+
+### 2025-12-16 (Optimization Merge)
+*   **Manual Optimization**: Cherry-picked critical optimizations from `origin/main`.
+    *   **Metadata Injection**: Injected company/file names into chunks to improve retrieval context.
+    *   **Performance Tuning**: Reduced Rerank Top-K from 50 to 15 (Critical Speedup).
+    *   **Stability**: Reduced Vector Batch Size to 16.

@@ -75,6 +75,13 @@ class Chunker:
         
         for doc in tqdm(docs, desc="Processing Documents"):
             content = doc.get("content", "")
+            
+            # Metadata Injection (Optimization from main)
+            # Inject company/file name into chunk content to boost retrieval robustness
+            company_name = doc.get("company_name", "") or doc.get("fileName", "").replace(".pdf", "")
+            if company_name and not content.startswith(f"【{company_name}】"):
+                content = f"【{company_name}】 {content}"
+
             if not content.strip():
                 continue
 
