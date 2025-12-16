@@ -2,7 +2,7 @@
 
 set -e
 pip install -r requirements.txt
-python ./My_RAG/download_model.py
+# python ./My_RAG/download_model.py
 if ! pgrep -x "ollama" > /dev/null
 then
     echo "Starting Ollama..."

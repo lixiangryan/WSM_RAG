@@ -1,116 +1,48 @@
-# WSM Final Project Sample Code
+# WSM RAG: Global Co-occurrence Graph (Phase 8)
 
-This repository simulates the execution workflow of the online judge system, including running inference, validating outputs, and generating detailed logs.
+**Baseline:** `origin/main` (Best Score Snapshot)  
+**Date:** 2025-12-15 21:53 (UTC+8)  
+**Branch:** `lixiang1213` (Integration)
 
-## Overview
+This project integrates a **Global Entity Co-occurrence Graph** (Phase 8) into the high-performance WSM RAG baseline. It combines the robustness of Hybrid Retrieval (BM25 + Vector) with the precision of a pre-computed Knowledge Graph.
 
-The `run.sh` script performs the following tasks:
+## 🏆 Architecture Overview
 
-1. Runs inference using `My_RAG/main.py` for a given language and generate output files.
-2. Validates the output format using `check_output_format.py`.
-3. Logs every step with timestamps for easier debugging.
+The system uses a **Weighted Sum Fusion** of three signals:
 
-## Script Details
+1.  **Sparse Retrieval (BM25):** captures keyword matches (Weight ~0.4).
+2.  **Dense Retrieval (Vector):** captures semantic meaning (Weight ~0.6).
+3.  **Knowledge Graph (Bonus Signal):** captures explicit entity relationships (Co-occurrence).
 
-### 1. Inference
+### Phase 8: Global Co-occurrence Graph (New!)
+*   **V3.0 Indexing:** Pre-computed global co-occurrence map identifying statistically significant entity pairs across the entire corpus.
+*   **Autonomous Expansion:** Instead of unstable runtime expansion, valid query terms (e.g., "TSMC") are expanded instantly using the global graph (e.g., -> "Wafer", "Revenue").
+*   **Performance:** $O(1)$ lookup speed with zero runtime overhead.
 
-For each language (`en`, `zh`), the script calls:
+## 📂 Key Files
 
-```bash
-python ./My_RAG/main.py \
-    --query_path <query_file> \
-    --docs_path <docs_file> \
-    --language <lang> \
-    --output <output_file>
-```
+*   `My_RAG/knowledge_graph.py`: **[NEW]** The V3.0 KG implementation.
+*   `kg_index_en.json` / `kg_index_zh.json`: **[NEW]** Pre-computed KG indexes (~5303 entities).
+*   `My_RAG/retriever.py`: **[MODIFIED]** Integration hook for KG Bonus Signal.
+*   `My_RAG/main.py`: **[MODIFIED]** updated to pass index paths.
+*   `scripts/build_kg_index.py`: Script to rebuild the graph from scratch.
 
-- Input format (`query_file` in `--query_path`):
+## 🚀 How to Run
 
-    Each line in the input file must be a valid JSON object with the following structure:
-
-    | Field                   | Type    | Description                                      |
-    | ----------------------- | ------- | ------------------------------------------------ |
-    | `query.query_id`        | integer | Unique ID of the query                           |
-    | `query.content`         | string  | The natural language question                    |
-    | `prediction.content`    | string  | Initially empty, your answer will be filled here     |
-    | `prediction.references` | list[string]    | Initially empty, your answer will be filled here |
-
-    Example input line:
-
-    ```json
-    {"query": {"query_id": 2134, "content": "When did Green Fields Agriculture Ltd. appoint a new CEO?"}, "prediction": {"content": "", "references": []}}
-    ```
-
-- Output format (`output_file` in `--output`):
-
-    Filled in your answer in `prediction.content` and `prediction.references` without changing other fields.
-
-    Example output line:
-
-    ```json
-    {"query": {"query_id": 2134, "content": "When did Green Fields Agriculture Ltd. appoint a new CEO?"}, "prediction": {"content": "I don't know when Green Fields Agriculture Ltd. appointed a new CEO based on the provided context.", "references": ["Green Fields Agriculture Ltd., established on April 1, 2005 in Sunnydale, California, is a listed company on NASDAQ and specializes in the cultivation and distribution of high-quality organic fruits and vegetables.\nIn January 2021, Green Fields Agriculture Ltd. made a significant equity acquisition by acquiring 40% equity of Green Harvest Farm. This acquisition expanded their market share and enhanced their control over the industry. As part of this acquisition, Green Fields Agriculture Ltd. also purchased an additional 500 acres of farmland, expanding their production capacity and allowing them to cultivate a wider variety of organic fruits and vegetables. The company further invested in the refurbishment of their facilities in February 2021, resulting in improved operational efficiency, reduced water usage, and compliance with organic farming standards.\nIn March 2021, Green Fields Agriculture Ltd. entered into a strategic partnership with an agricultural research institution for prod"]}}
-    ```
-
-### 2. Output Format Check
+The workflow remains identical to the baseline. The system automatically detects and loads the `kg_index_*.json` files.
 
 ```bash
-python ./check_output_format.py \
-    --query_file <query_file> \
-    --processed_file <processed_file>
-```
-
-- `query_file`: The original input file used for inference.  
-- `processed_file`: The output file generated by the inference step.
-
-The script checks if the `processed_file` adheres to the expected output format and answer all queries in the `query_file`.
-
-
-If the output format is correct, the script prints:
-
-Format check passed.
-
-## Configuration Settings
-
-The system automatically loads the Ollama configuration from one of two files:
-
-- `configs/config_local.yaml` – used for local development
-- `configs/config_submit.yaml` – used when the project is submitted (because `configs/config_local.yaml` is ignored by Git)
-
-When the program starts, it searches for the configuration files in order:
-
-```python
-config_paths = [
-    configs_folder / "config_local.yaml",
-    configs_folder / "config_submit.yaml",
-]
-```
-
-If `config_local.yaml` exists, it takes priority and will be used. If it is not found (e.g., on the grading server), the system automatically falls back to `config_submit.yaml`.
-
-This design allows you to use different configurations for local testing and for the submitted version.
-You can freely adjust `config_local.yaml` during development for convenience, while the grading system will automatically use `config_submit.yaml`, ensuring that your submission always follows the required environment and settings.
-
-## How to Run
-
-```bash
+# 1. Install dependencies
 pip install -r requirements.txt
+
+# 2. Run Inference
 ./run.sh
 ```
-## Optimization & Change Log
 
-### Phase 8: Global Entity Co-occurrence Graph (v3.0)
+## 🛠️ Change Log
 
-**Integrated from branch `lixiang1202_optimize-rag-performance`**
-
-We have integrated a **Global Knowledge Graph (v3.0)** to enhance retrieval precision and recall using entity co-occurrence statistics.
-
-**Key Features:**
-1.  **Global Co-occurrence Graph:** Pre-computed entity relationships based on the entire corpus (saved in `kg_index_en.json` and `kg_index_zh.json`).
-2.  **Autonomous Query Expansion:** Instead of relying on potentially unstable runtime pseudo-relevance feedback, we use the global graph to Expand queries with statistically significant co-occurring terms (e.g., "TSMC" -> "Wafer", "Revenue").
-3.  **Bonus Signal Fusion:** The KG score is fused into the retrieval pipeline in `My_RAG/retriever.py` as a weighted bonus signal, improving ranking for entity-centric queries without disrupting the baseline performance.
-
-**Files Added/Modified:**
-- `My_RAG/knowledge_graph.py`: KG implementation (v3.0).
-- `kg_index_en.json`, `kg_index_zh.json`: Pre-computed KG indexes.
-- `My_RAG/retriever.py`: Patched to include `SimpleKnowledgeGraph` integration.
-- `My_RAG/main.py`: Patched to pass `index_path` to retriever.
+### 2025-12-15 (Phase 8 Integration)
+*   **Baseline Reset**: Reset branch to `origin/main` to ensure a clean slate based on the best-scoring version.
+*   **Feature Merge**: Cherry-picked Phase 8 KG files from `lixiang1202_optimize-rag-performance`.
+*   **Integration**: Wired up `SimpleKnowledgeGraph` in `retriever.py` to provide a "Bonus Signal" (boosting relevance score if an entity match is found).
+*   **Optimization**: Enabled "Index-Time Check" for query expansion to avoid runtime latencies.

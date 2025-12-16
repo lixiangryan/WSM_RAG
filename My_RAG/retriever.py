@@ -30,12 +30,12 @@ print(f"[Config] Host: {OLLAMA_HOST}, Mode: {'Competition (API)' if IS_COMPETITI
 class RAGConfig:
     SETTINGS = {
         "zh": {
-            "vector_model": "qwen2.5:3b",  # 建議改用你剛下載的 qwen 或 bge-m3
+            "vector_model": "qwen3-embedding:0.6b",
             "bm25_tokenizer": "jieba",
             "weights": {"bm25": 0.4, "vec": 0.6},
         },
         "en": {
-            "vector_model": "qwen2.5:3b", 
+            "vector_model": "embeddinggemma:300m",
             "bm25_tokenizer": "space",
             "weights": {"bm25": 0.5, "vec": 0.5},
         },
