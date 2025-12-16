@@ -1,11 +1,38 @@
-jieba
-jsonlines
-ollama
-pydantic
-PyYAML
-rank_bm25
-tqdm
-sentence-transformers
-transformers
-torch
-numpy
+# 指定 CPU 來源 (給 Linux 用，避免下載幾 GB 的 CUDA 包)
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# --- 智慧判斷區 (Smart Selection) ---
+# 本地開發 (Mac): 安裝支援 MPS 加速的版本
+torch==2.2.2; sys_platform == 'darwin'
+torchvision==0.17.2; sys_platform == 'darwin'
+torchaudio==2.2.2; sys_platform == 'darwin'
+
+# 比賽環境 (Linux): 強制安裝 CPU 輕量版 (保命關鍵!)
+torch==2.2.2+cpu; sys_platform == 'linux'
+torchvision==0.17.2+cpu; sys_platform == 'linux'
+torchaudio==2.2.2+cpu; sys_platform == 'linux'
+
+# --- 核心 NLP 套件 ---
+# 用於 Embedding 和 Reranking
+sentence-transformers==2.7.0
+transformers==4.41.2
+accelerate>=0.26.0
+
+# 用於關鍵字搜尋 (BM25)
+rank_bm25==0.2.2
+
+# 限制 numpy 版本，避免與舊版套件衝突 (這是好習慣)
+numpy<2.0.0
+
+# --- 輔助工具 ---
+jieba==0.42.1
+# 如果沒有處理 PDF 可以註解掉下面這行，有備無患先留著
+pdfplumber==0.11.0 
+jsonlines==4.0.0
+requests==2.31.0
+tqdm==4.66.2
+PyYAML==6.0.1
+
+# --- 關鍵模型介面 ---
+# 絕對不能動！配合老師環境的舊版 Ollama
+ollama==0.1.8

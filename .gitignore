@@ -1,8 +1,12 @@
 # Virtual environment
 .venv
+.venv/
+wsm_final_env/
+.env
 
 # IDE specific files
 .vscode
+.DS_Store
 
 # Python cache files
 __pycache__/
@@ -10,9 +14,11 @@ __pycache__/
 # config files used for local testing
 configs/config_local.yaml
 
-# output files
-predictions/data/
-configs/config_local.yaml
-__pycache__/
-.DS_Store
-.venv/
+# output files (比賽產出的結果不用上傳)
+output/
+predictions/
+*.jsonl
+
+# 模型處理
+local_bge_m3/
+local_bge_reranker/
