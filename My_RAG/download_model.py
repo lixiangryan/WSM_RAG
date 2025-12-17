@@ -36,6 +36,24 @@ def download_embedding_model():
         sys.exit(1)
 
 
+def download_reranker_model():
+    """
+    下載 Reranker 模型 (以防本地沒有 cache)
+    """
+    RERANKER_NAME = "BAAI/bge-reranker-v2-m3"
+    print(f"⬇️  正在下載 Reranker 模型: {RERANKER_NAME} ...")
+    try:
+        # CrossEncoder 也是依賴 sentence-transformers，但使用方式稍有不同
+        # 這裡我們只為了 cache 模型權重，使用 SentenceTransformer 下載即可 (它會存到同樣的 cache 目錄)
+        # 或者直接用 CrossEncoder 載入一次
+        from sentence_transformers import CrossEncoder
+        model = CrossEncoder(RERANKER_NAME)
+        print(f"✅ Reranker 模型 {RERANKER_NAME} 下載完成！")
+    except Exception as e:
+        print(f"❌ Reranker 模型下載失敗: {e}")
+        # Reranker 失敗通常只會降級回無 rerank，所以不一定要 exit
+        # sys.exit(1)
+
 def download_llm_model():
     """
     下載 Ollama 模型 (用於 Generation)
@@ -60,7 +78,10 @@ if __name__ == "__main__":
     # 1. 下載 Embedding Model
     download_embedding_model()
 
-    # 2. 下載 LLM (如果你是用 Ollama 跑生成)
+    # 2. 下載 Reranker Model
+    download_reranker_model()
+
+    # 3. 下載 LLM (如果你是用 Ollama 跑生成)
     download_llm_model()
 
     print("=== 所有模型下載程序結束 ===")

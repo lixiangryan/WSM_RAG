@@ -145,8 +145,8 @@ class HybridReranker:
             print("[Reranker] Detected Local Mode. Loading local CrossEncoder...")
             try:
                 from sentence_transformers import CrossEncoder
-                # 使用輕量級模型，避免本地跑太慢
-                self.local_model = CrossEncoder('BAAI/bge-reranker-base', device='cpu')
+                # 使用 bge-reranker-v2-m3 (更強大)
+                self.local_model = CrossEncoder('BAAI/bge-reranker-v2-m3', device='cpu')
             except ImportError:
                 print("[Warning] sentence-transformers not installed. Reranking will be skipped.")
             except Exception as e:
