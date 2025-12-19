@@ -3,6 +3,7 @@ from sentence_transformers import SentenceTransformer, util
 import re
 import os
 from tqdm import tqdm
+from typing import List, Dict, Any, Optional
 
 # 設定最小 Chunk 長度 (過濾雜訊用)
 MIN_CHUNK_SIZE = 10
@@ -60,6 +61,7 @@ class Chunker:
             current_chunk = [sentences[0]]
 
             for i in range(len(sentences) - 1):
+                # 計算相鄰句子的相似度
                 score = util.cos_sim(embeddings[i], embeddings[i + 1]).item()
 
                 if score >= self.threshold:
@@ -75,6 +77,7 @@ class Chunker:
                         )
                     current_chunk = [sentences[i + 1]]
 
+            # 處理最後一個 chunk
             if current_chunk:
                 chunk_text = "".join(current_chunk)
                 if len(chunk_text) > MIN_CHUNK_SIZE:
