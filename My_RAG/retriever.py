@@ -10,16 +10,9 @@ from utils import load_ollama_config
 RERANK_API_URL = "http://ollama-gateway:11434/rerank"
 
 
+# ==========================================
 # 1. Retriever Configuration
-# 優先檢查本地模型，確保斷網能跑
-if os.path.exists("./local_bge_m3"):
-    EMBEDDING_MODEL = "./local_bge_m3"
-    print("[Config] Using Local Embedding Model: ./local_bge_m3")
-else:
-    EMBEDDING_MODEL = "BAAI/bge-m3"
-    print("[Config] Using HuggingFace Embedding Model: BAAI/bge-m3")
-
-
+# ==========================================
 class RAGConfig:
     SETTINGS = {
         "zh": {

@@ -1,8 +1,13 @@
 from typing import List, Union
 import re
+<<<<<<< HEAD
 from nltk.tokenize import sent_tokenize, word_tokenize
 from pysbd import Segmenter
 import jieba
+=======
+from nltk.tokenize import sent_tokenize
+from pysbd import Segmenter
+>>>>>>> wsm/wang
 
 segmenter = Segmenter()
 
@@ -37,6 +42,7 @@ def exist_match(query_text: Union[List[str], str], reference_texts: List[str], l
             return 0
     
     return 1
+<<<<<<< HEAD
 
 def split_words(text: Union[List[str], str], language: str) -> List[str]:
     """Splits text into words based on the language."""
@@ -53,3 +59,5 @@ def split_words(text: Union[List[str], str], language: str) -> List[str]:
         words = text.lower().split()
         
     return [word for word in words if word.strip()]
+=======
+>>>>>>> wsm/wang

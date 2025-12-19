@@ -1,0 +1,50 @@
+services:
+  # 服務 1: Ollama 裁判模型
+  ollama:
+    # --- [修改這裡] ---
+    # 註解掉 image: ollama/ollama
+    # image: ollama/ollama 
+    # 改成使用我們客製化的 Dockerfile
+    build: ./ollama_service
+    # --------------------
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_storage:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [ gpu ]
+              count: 1
+
+  # 服務 2: 你的 RAG 應用程式
+  app:
+    build: .
+    depends_on:
+      - ollama
+    volumes:
+      - ./predictions:/app/predictions
+      - ./results:/app/results
+    # --- [新增這裡] ---
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - GENERATOR_MODEL=granite4:3b
+      - JUDGE_MODEL=gemma:2b
+      - EMBEDDING_EN_MODEL=nomic-embed-text
+      - EMBEDDING_ZH_MODEL=embeddinggemma
+      # 將全域 API 超時設定為 120 秒 (2 分鐘)
+      # 這會覆蓋 Python 客戶端預設的短時間超時
+      - OPENAI_TIMEOUT=120
+    # --------------------
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [ gpu ]
+              count: 1
+
+volumes:
+  ollama_storage:
